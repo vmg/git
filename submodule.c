@@ -1102,7 +1102,8 @@ void connect_work_tree_and_git_dir(const char *work_tree, const char *git_dir)
 	struct strbuf configfile_name = STRBUF_INIT;
 	struct strbuf gitfile_content = STRBUF_INIT;
 	struct strbuf gitfile_name = STRBUF_INIT;
-	const char *real_work_tree = real_path(work_tree);
+	char *real_work_tree = xstrdup(real_path(work_tree));
+	char *to_free = real_work_tree;
 	const char *pathspec[] = { real_work_tree, git_dir, NULL };
 	const char *max_prefix = common_prefix(pathspec);
 	FILE *fp;
@@ -1157,4 +1158,5 @@ void connect_work_tree_and_git_dir(const char *work_tree, const char *git_dir)
 
 	strbuf_release(&core_worktree_setting);
 	strbuf_release(&configfile_name);
+	free(to_free);
 }
