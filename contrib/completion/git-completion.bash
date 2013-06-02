@@ -592,11 +592,6 @@ __git_complete_diff_index_file ()
 	esac
 }
 
-__git_complete_file ()
-{
-	__git_complete_revlist_file
-}
-
 __git_complete_revlist ()
 {
 	__git_complete_revlist_file
@@ -1007,7 +1002,7 @@ _git_archive ()
 		return
 		;;
 	esac
-	__git_complete_file
+	__git_complete_revlist_file
 }
 
 _git_bisect ()
@@ -1465,7 +1460,7 @@ _git_ls_remote ()
 
 _git_ls_tree ()
 {
-	__git_complete_file
+	__git_complete_revlist_file
 }
 
 # Options that go well for log, shortlog and gitk
@@ -2360,7 +2355,7 @@ _git_show ()
 		return
 		;;
 	esac
-	__git_complete_file
+	__git_complete_revlist_file
 }
 
 _git_show_branch ()
