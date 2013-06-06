@@ -125,6 +125,7 @@ static void process_tree(struct rev_info *revs,
 	strbuf_setlen(base, baselen);
 	free(tree->buffer);
 	tree->buffer = NULL;
+	tree->object.parsed = 0;
 }
 
 static void mark_edge_parents_uninteresting(struct commit *commit,
