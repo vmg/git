@@ -551,6 +551,11 @@ __git_complete_revlist_file ()
 	esac
 }
 
+# no callers; deprecated alias
+__git_complete_file ()
+{
+	__git_complete_revlist_file
+}
 
 # __git_complete_index_file requires 1 argument: the options to pass to
 # ls-file
