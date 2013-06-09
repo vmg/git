@@ -489,11 +489,6 @@ __git_complete_revlist_file ()
 	esac
 }
 
-# no callers; deprecated alias
-__git_complete_file ()
-{
-	__git_complete_revlist_file
-}
 
 # __git_complete_index_file requires 1 argument:
 # 1: the options to pass to ls-file
@@ -512,6 +507,11 @@ __git_complete_index_file ()
 	esac
 
 	__gitcomp_file "$(__git_index_files "$1" "$pfx")" "$pfx" "$cur_"
+}
+
+__git_complete_file ()
+{
+	__git_complete_revlist_file
 }
 
 __git_complete_revlist ()
@@ -924,7 +924,7 @@ _git_archive ()
 		return
 		;;
 	esac
-	__git_complete_revlist_file
+	__git_complete_file
 }
 
 _git_bisect ()
@@ -1382,7 +1382,7 @@ _git_ls_remote ()
 
 _git_ls_tree ()
 {
-	__git_complete_revlist_file
+	__git_complete_file
 }
 
 # Options that go well for log, shortlog and gitk
@@ -2277,7 +2277,7 @@ _git_show ()
 		return
 		;;
 	esac
-	__git_complete_revlist_file
+	__git_complete_file
 }
 
 _git_show_branch ()
