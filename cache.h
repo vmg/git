@@ -1101,6 +1101,7 @@ extern void clear_delta_base_cache(void);
 extern struct packed_git *add_packed_git(const char *, int, int);
 extern const unsigned char *nth_packed_object_sha1(struct packed_git *, uint32_t);
 extern off_t nth_packed_object_offset(const struct packed_git *, uint32_t);
+extern int find_pack_entry_pos(const unsigned char *sha1, struct packed_git *p);
 extern off_t find_pack_entry_one(const unsigned char *, struct packed_git *);
 extern int is_pack_valid(struct packed_git *);
 extern void *unpack_entry(struct packed_git *, off_t, enum object_type *, unsigned long *);
