@@ -2223,6 +2223,12 @@ off_t nth_packed_object_offset(const struct packed_git *p, uint32_t n)
 	}
 }
 
+int nth_packed_object_info(struct packed_git *p, uint32_t n, unsigned long *sizep)
+{
+	off_t offset = nth_packed_object_offset(p, n);
+	return packed_object_info(p, offset, sizep, NULL);
+}
+
 int find_pack_entry_pos(const unsigned char *sha1, struct packed_git *p)
 {
 	const uint32_t *level1_ofs = p->index_data;
