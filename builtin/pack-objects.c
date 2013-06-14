@@ -18,6 +18,7 @@
 #include "refs.h"
 #include "streaming.h"
 #include "thread-utils.h"
+#include "khash.h"
 
 static const char *pack_usage[] = {
 	N_("git pack-objects --stdout [options...] [< ref-list | < object-list]"),
@@ -57,7 +58,7 @@ struct object_entry {
  * in the order we see -- typically rev-list --objects order that gives us
  * nice "minimum seek" order.
  */
-static struct object_entry *objects;
+static struct object_entry **objects;
 static struct pack_idx_entry **written_list;
 static uint32_t nr_objects, nr_alloc, nr_result, nr_written;
 
@@ -93,8 +94,8 @@ static unsigned long window_memory_limit = 0;
  * to help looking up the entry by object name.
  * This hashtable is built after all the objects are seen.
  */
-static int *object_ix;
-static int object_ix_hashsz;
+
+static khash_sha1 *packed_objects;
 static struct object_entry *locate_object_entry(const unsigned char *sha1);
 
 /*
@@ -102,6 +103,35 @@ static struct object_entry *locate_object_entry(const unsigned char *sha1);
  */
 static uint32_t written, written_delta;
 static uint32_t reused, reused_delta;
+
+
+static struct object_slab {
+	struct object_slab *next;
+	uint32_t count;
+	struct object_entry data[0];
+} *slab;
+
+#define OBJECTS_PER_SLAB 2048
+
+static void push_slab(void)
+{
+	static const size_t slab_size =
+		(OBJECTS_PER_SLAB * sizeof(struct object_entry)) + sizeof(struct object_slab);
+
+	struct object_slab *new_slab = calloc(1, slab_size);
+
+	new_slab->count = 0;
+	new_slab->next = slab;
+	slab = new_slab;
+}
+
+static struct object_entry *alloc_object_entry(void)
+{
+	if (!slab || slab->count == OBJECTS_PER_SLAB)
+		push_slab();
+
+	return &slab->data[slab->count++];
+}
 
 
 static void *get_delta(struct object_entry *entry)
@@ -635,10 +665,10 @@ static struct object_entry **compute_write_order(void)
 	struct object_entry **wo = xmalloc(nr_objects * sizeof(*wo));
 
 	for (i = 0; i < nr_objects; i++) {
-		objects[i].tagged = 0;
-		objects[i].filled = 0;
-		objects[i].delta_child = NULL;
-		objects[i].delta_sibling = NULL;
+		objects[i]->tagged = 0;
+		objects[i]->filled = 0;
+		objects[i]->delta_child = NULL;
+		objects[i]->delta_sibling = NULL;
 	}
 
 	/*
@@ -647,7 +677,7 @@ static struct object_entry **compute_write_order(void)
 	 * recency order.
 	 */
 	for (i = nr_objects; i > 0;) {
-		struct object_entry *e = &objects[--i];
+		struct object_entry *e = objects[--i];
 		if (!e->delta)
 			continue;
 		/* Mark me as the first child */
@@ -665,9 +695,9 @@ static struct object_entry **compute_write_order(void)
 	 * we see a tagged tip.
 	 */
 	for (i = wo_end = 0; i < nr_objects; i++) {
-		if (objects[i].tagged)
+		if (objects[i]->tagged)
 			break;
-		add_to_write_order(wo, &wo_end, &objects[i]);
+		add_to_write_order(wo, &wo_end, objects[i]);
 	}
 	last_untagged = i;
 
@@ -675,35 +705,35 @@ static struct object_entry **compute_write_order(void)
 	 * Then fill all the tagged tips.
 	 */
 	for (; i < nr_objects; i++) {
-		if (objects[i].tagged)
-			add_to_write_order(wo, &wo_end, &objects[i]);
+		if (objects[i]->tagged)
+			add_to_write_order(wo, &wo_end, objects[i]);
 	}
 
 	/*
 	 * And then all remaining commits and tags.
 	 */
 	for (i = last_untagged; i < nr_objects; i++) {
-		if (objects[i].type != OBJ_COMMIT &&
-		    objects[i].type != OBJ_TAG)
+		if (objects[i]->type != OBJ_COMMIT &&
+		    objects[i]->type != OBJ_TAG)
 			continue;
-		add_to_write_order(wo, &wo_end, &objects[i]);
+		add_to_write_order(wo, &wo_end, objects[i]);
 	}
 
 	/*
 	 * And then all the trees.
 	 */
 	for (i = last_untagged; i < nr_objects; i++) {
-		if (objects[i].type != OBJ_TREE)
+		if (objects[i]->type != OBJ_TREE)
 			continue;
-		add_to_write_order(wo, &wo_end, &objects[i]);
+		add_to_write_order(wo, &wo_end, objects[i]);
 	}
 
 	/*
 	 * Finally all the rest in really tight order
 	 */
 	for (i = last_untagged; i < nr_objects; i++) {
-		if (!objects[i].filled)
-			add_family_to_write_order(wo, &wo_end, &objects[i]);
+		if (!objects[i]->filled)
+			add_family_to_write_order(wo, &wo_end, objects[i]);
 	}
 
 	if (wo_end != nr_objects)
@@ -804,59 +834,24 @@ static void write_pack_file(void)
 		nr_remaining -= nr_written;
 	} while (nr_remaining && i < nr_objects);
 
+	stop_progress(&progress_state);
+
 	free(written_list);
 	free(write_order);
-	stop_progress(&progress_state);
 	if (written != nr_result)
 		die("wrote %"PRIu32" objects while expecting %"PRIu32,
 			written, nr_result);
 }
 
-static int locate_object_entry_hash(const unsigned char *sha1)
-{
-	int i;
-	unsigned int ui;
-	memcpy(&ui, sha1, sizeof(unsigned int));
-	i = ui % object_ix_hashsz;
-	while (0 < object_ix[i]) {
-		if (!hashcmp(sha1, objects[object_ix[i] - 1].idx.sha1))
-			return i;
-		if (++i == object_ix_hashsz)
-			i = 0;
-	}
-	return -1 - i;
-}
-
 static struct object_entry *locate_object_entry(const unsigned char *sha1)
 {
-	int i;
+	khiter_t pos = kh_get_sha1(packed_objects, sha1);
 
-	if (!object_ix_hashsz)
-		return NULL;
-
-	i = locate_object_entry_hash(sha1);
-	if (0 <= i)
-		return &objects[object_ix[i]-1];
-	return NULL;
-}
-
-static void rehash_objects(void)
-{
-	uint32_t i;
-	struct object_entry *oe;
-
-	object_ix_hashsz = nr_objects * 3;
-	if (object_ix_hashsz < 1024)
-		object_ix_hashsz = 1024;
-	object_ix = xrealloc(object_ix, sizeof(int) * object_ix_hashsz);
-	memset(object_ix, 0, sizeof(int) * object_ix_hashsz);
-	for (i = 0, oe = objects; i < nr_objects; i++, oe++) {
-		int ix = locate_object_entry_hash(oe->idx.sha1);
-		if (0 <= ix)
-			continue;
-		ix = -1 - ix;
-		object_ix[ix] = i + 1;
+	if (pos < kh_end(packed_objects)) {
+		return kh_value(packed_objects, pos);
 	}
+
+	return NULL;
 }
 
 static unsigned name_hash(const char *name)
@@ -901,19 +896,19 @@ static int no_try_delta(const char *path)
 	return 0;
 }
 
-static int add_object_entry(const unsigned char *sha1, enum object_type type,
-			    const char *name, int exclude)
+static int add_object_entry_1(const unsigned char *sha1, enum object_type type,
+			    uint32_t hash, int exclude, struct packed_git *found_pack,
+				off_t found_offset)
 {
 	struct object_entry *entry;
-	struct packed_git *p, *found_pack = NULL;
-	off_t found_offset = 0;
-	int ix;
-	unsigned hash = name_hash(name);
+	struct packed_git *p;
+	khiter_t ix;
+	int hash_ret;
 
-	ix = nr_objects ? locate_object_entry_hash(sha1) : -1;
-	if (ix >= 0) {
+	ix = kh_put_sha1(packed_objects, sha1, &hash_ret);
+	if (hash_ret == 0) {
 		if (exclude) {
-			entry = objects + object_ix[ix] - 1;
+			entry = kh_value(packed_objects, ix);
 			if (!entry->preferred_base)
 				nr_result--;
 			entry->preferred_base = 1;
@@ -921,38 +916,42 @@ static int add_object_entry(const unsigned char *sha1, enum object_type type,
 		return 0;
 	}
 
-	if (!exclude && local && has_loose_object_nonlocal(sha1))
+	if (!exclude && local && has_loose_object_nonlocal(sha1)) {
+		kh_del_sha1(packed_objects, ix);
 		return 0;
+	}
 
-	for (p = packed_git; p; p = p->next) {
-		off_t offset = find_pack_entry_one(sha1, p);
-		if (offset) {
-			if (!found_pack) {
-				if (!is_pack_valid(p)) {
-					warning("packfile %s cannot be accessed", p->pack_name);
-					continue;
+	if (!found_pack) {
+		for (p = packed_git; p; p = p->next) {
+			off_t offset = find_pack_entry_one(sha1, p);
+			if (offset) {
+				if (!found_pack) {
+					if (!is_pack_valid(p)) {
+						warning("packfile %s cannot be accessed", p->pack_name);
+						continue;
+					}
+					found_offset = offset;
+					found_pack = p;
 				}
-				found_offset = offset;
-				found_pack = p;
+				if (exclude)
+					break;
+				if (incremental ||
+					(local && !p->pack_local) ||
+					(ignore_packed_keep && p->pack_local && p->pack_keep)) {
+					kh_del_sha1(packed_objects, ix);
+					return 0;
+				}
 			}
-			if (exclude)
-				break;
-			if (incremental)
-				return 0;
-			if (local && !p->pack_local)
-				return 0;
-			if (ignore_packed_keep && p->pack_local && p->pack_keep)
-				return 0;
 		}
 	}
 
 	if (nr_objects >= nr_alloc) {
 		nr_alloc = (nr_alloc  + 1024) * 3 / 2;
-		objects = xrealloc(objects, nr_alloc * sizeof(*entry));
+		objects = xrealloc(objects, nr_alloc * sizeof(struct object_entry *));
 	}
 
-	entry = objects + nr_objects++;
-	memset(entry, 0, sizeof(*entry));
+	entry = alloc_object_entry();
+
 	hashcpy(entry->idx.sha1, sha1);
 	entry->hash = hash;
 	if (type)
@@ -966,17 +965,28 @@ static int add_object_entry(const unsigned char *sha1, enum object_type type,
 		entry->in_pack_offset = found_offset;
 	}
 
-	if (object_ix_hashsz * 3 <= nr_objects * 4)
-		rehash_objects();
-	else
-		object_ix[-1 - ix] = nr_objects;
+	kh_value(packed_objects, ix) = entry;
+	kh_key(packed_objects, ix) = entry->idx.sha1;
+	objects[nr_objects++] = entry;
 
 	display_progress(progress_state, nr_objects);
 
-	if (name && no_try_delta(name))
-		entry->no_try_delta = 1;
-
 	return 1;
+}
+
+static int add_object_entry(const unsigned char *sha1, enum object_type type,
+			    const char *name, int exclude)
+{
+	if (add_object_entry_1(sha1, type, name_hash(name), exclude, NULL, 0)) {
+		struct object_entry *entry = objects[nr_objects - 1];
+
+		if (name && no_try_delta(name))
+			entry->no_try_delta = 1;
+
+		return 1;
+	}
+
+	return 0;
 }
 
 struct pbase_tree_cache {
@@ -1404,7 +1414,7 @@ static void get_object_details(void)
 
 	sorted_by_offset = xcalloc(nr_objects, sizeof(struct object_entry *));
 	for (i = 0; i < nr_objects; i++)
-		sorted_by_offset[i] = objects + i;
+		sorted_by_offset[i] = objects[i];
 	qsort(sorted_by_offset, nr_objects, sizeof(*sorted_by_offset), pack_offset_sort);
 
 	for (i = 0; i < nr_objects; i++) {
@@ -2063,7 +2073,7 @@ static void prepare_pack(int window, int depth)
 	nr_deltas = n = 0;
 
 	for (i = 0; i < nr_objects; i++) {
-		struct object_entry *entry = objects + i;
+		struct object_entry *entry = objects[i];
 
 		if (entry->delta)
 			/* This happens if we decided to reuse existing
@@ -2574,6 +2584,7 @@ int cmd_pack_objects(int argc, const char **argv, const char *prefix)
 	if (progress && all_progress_implied)
 		progress = 2;
 
+	packed_objects = kh_init_sha1();
 	prepare_packed_git();
 
 	if (progress)
@@ -2598,5 +2609,6 @@ int cmd_pack_objects(int argc, const char **argv, const char *prefix)
 		fprintf(stderr, "Total %"PRIu32" (delta %"PRIu32"),"
 			" reused %"PRIu32" (delta %"PRIu32")\n",
 			written, written_delta, reused, reused_delta);
+
 	return 0;
 }

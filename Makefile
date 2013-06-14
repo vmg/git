@@ -683,6 +683,7 @@ LIB_H += grep.h
 LIB_H += hash.h
 LIB_H += help.h
 LIB_H += http.h
+LIB_H += khash.h
 LIB_H += kwset.h
 LIB_H += levenshtein.h
 LIB_H += line-log.h
