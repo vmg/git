@@ -108,7 +108,7 @@ rollback=
 failed=
 for name in $names
 do
-	for sfx in pack idx
+	for sfx in pack idx bitmap
 	do
 		file=pack-$name.$sfx
 		test -f "$PACKDIR/$file" || continue
@@ -156,6 +156,11 @@ do
 	fullbases="$fullbases pack-$name"
 	chmod a-w "$PACKTMP-$name.pack"
 	chmod a-w "$PACKTMP-$name.idx"
+
+	test -f "$PACKTMP-$name.bitmap" &&
+	chmod a-w "$PACKTMP-$name.bitmap" &&
+	mv -f "$PACKTMP-$name.bitmap" "$PACKDIR/pack-$name.bitmap"
+
 	mv -f "$PACKTMP-$name.pack" "$PACKDIR/pack-$name.pack" &&
 	mv -f "$PACKTMP-$name.idx"  "$PACKDIR/pack-$name.idx" ||
 	exit
@@ -166,6 +171,7 @@ for name in $names
 do
 	rm -f "$PACKDIR/old-pack-$name.idx"
 	rm -f "$PACKDIR/old-pack-$name.pack"
+	rm -f "$PACKDIR/old-pack-$name.bitmap"
 done
 
 # End of pack replacement.
@@ -180,7 +186,7 @@ then
 		  do
 			case " $fullbases " in
 			*" $e "*) ;;
-			*)	rm -f "$e.pack" "$e.idx" "$e.keep" ;;
+			*)	rm -f "$e.pack" "$e.idx" "$e.keep" "$e.bitmap" ;;
 			esac
 		  done
 		)
