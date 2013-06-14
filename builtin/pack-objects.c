@@ -20,37 +20,12 @@
 #include "thread-utils.h"
 #include "khash.h"
 #include "pack-bitmap.h"
+#include "builtin/pack-objects.h"
 
 static const char *pack_usage[] = {
 	N_("git pack-objects --stdout [options...] [< ref-list | < object-list]"),
 	N_("git pack-objects [options...] base-name [< ref-list | < object-list]"),
 	NULL
-};
-
-struct object_entry {
-	struct pack_idx_entry idx;
-	unsigned long size;	/* uncompressed size */
-	struct packed_git *in_pack; 	/* already in pack */
-	off_t in_pack_offset;
-	struct object_entry *delta;	/* delta base object */
-	struct object_entry *delta_child; /* deltified objects who bases me */
-	struct object_entry *delta_sibling; /* other deltified objects who
-					     * uses the same base as me
-					     */
-	void *delta_data;	/* cached delta (uncompressed) */
-	unsigned long delta_size;	/* delta data size (uncompressed) */
-	unsigned long z_delta_size;	/* delta data size (compressed) */
-	unsigned int hash;	/* name hint hash */
-	enum object_type type;
-	enum object_type in_pack_type;	/* could be delta */
-	unsigned char in_pack_header_size;
-	unsigned char preferred_base; /* we do not pack this, but is available
-				       * to be used as the base object to delta
-				       * objects against.
-				       */
-	unsigned char no_try_delta;
-	unsigned char tagged; /* near the very tip of refs */
-	unsigned char filled; /* assigned write-order */
 };
 
 /*
@@ -86,6 +61,7 @@ static int pack_compression_seen;
 
 static int bitmap_support;
 static int use_bitmap_index;
+static int write_bitmap_index;
 
 static unsigned long delta_cache_size = 0;
 static unsigned long max_delta_cache_size = 256 * 1024 * 1024;
@@ -108,6 +84,12 @@ static struct object_entry *locate_object_entry(const unsigned char *sha1);
 static uint32_t written, written_delta;
 static uint32_t reused, reused_delta;
 
+/*
+ * Indexed commits
+ */
+struct commit **indexed_commits;
+unsigned int indexed_commits_nr;
+unsigned int indexed_commits_alloc;
 
 static struct object_slab {
 	struct object_slab *next;
@@ -137,6 +119,16 @@ static struct object_entry *alloc_object_entry(void)
 	return &slab->data[slab->count++];
 }
 
+static void index_commit_for_bitmap(struct commit *commit)
+{
+	if (indexed_commits_nr >= indexed_commits_alloc) {
+		indexed_commits_alloc = (indexed_commits_alloc + 32) * 2;
+		indexed_commits = xrealloc(indexed_commits,
+			indexed_commits_alloc * sizeof(struct commit *));
+	}
+
+	indexed_commits[indexed_commits_nr++] = commit;
+}
 
 static void *get_delta(struct object_entry *entry)
 {
@@ -746,6 +738,29 @@ static struct object_entry **compute_write_order(void)
 	return wo;
 }
 
+static void resolve_real_types(
+	 struct pack_idx_entry **index, uint32_t index_nr)
+{
+	uint32_t i;
+
+	for (i = 0; i < index_nr; ++i) {
+		struct object_entry *entry = (struct object_entry *)index[i];
+
+		switch (entry->type) {
+		case OBJ_COMMIT:
+		case OBJ_TREE:
+		case OBJ_BLOB:
+		case OBJ_TAG:
+			entry->real_type = entry->type;
+			break;
+
+		default:
+			entry->real_type = sha1_object_info(entry->idx.sha1, NULL);
+			break;
+		}
+	}
+}
+
 static void write_pack_file(void)
 {
 	uint32_t i = 0, j;
@@ -824,9 +839,27 @@ static void write_pack_file(void)
 			if (sizeof(tmpname) <= strlen(base_name) + 50)
 				die("pack base name '%s' too long", base_name);
 			snprintf(tmpname, sizeof(tmpname), "%s-", base_name);
+
+			if (write_bitmap_index)
+				resolve_real_types(written_list, nr_written);
+
 			finish_tmp_packfile(tmpname, pack_tmp_name,
 					    written_list, nr_written,
 					    &pack_idx_opts, sha1);
+
+			if (write_bitmap_index && nr_remaining == nr_written) {
+				char *end_of_name_prefix = strrchr(tmpname, 0);
+				sprintf(end_of_name_prefix, "%s.bitmap", sha1_to_hex(sha1));
+
+				stop_progress(&progress_state);
+
+				bitmap_writer_show_progress(progress);
+				bitmap_writer_build_type_index(written_list, nr_written);
+				bitmap_writer_select_commits(indexed_commits, indexed_commits_nr, -1);
+				bitmap_writer_build(packed_objects);
+				bitmap_writer_finish(tmpname, sha1, BITMAP_OPT_HASH_CACHE);
+			}
+
 			free(pack_tmp_name);
 			puts(sha1_to_hex(sha1));
 		}
@@ -900,10 +933,8 @@ static int add_object_entry_1(const unsigned char *sha1, enum object_type type,
 		return 0;
 	}
 
-	if (!exclude && local && has_loose_object_nonlocal(sha1)) {
-		kh_del_sha1(packed_objects, ix);
-		return 0;
-	}
+	if (!exclude && local && has_loose_object_nonlocal(sha1))
+		goto skip_entry;
 
 	if (!found_pack) {
 		for (p = packed_git; p; p = p->next) {
@@ -919,12 +950,12 @@ static int add_object_entry_1(const unsigned char *sha1, enum object_type type,
 				}
 				if (exclude)
 					break;
-				if (incremental ||
-					(local && !p->pack_local) ||
-					(ignore_packed_keep && p->pack_local && p->pack_keep)) {
-					kh_del_sha1(packed_objects, ix);
-					return 0;
-				}
+				if (incremental)
+					goto skip_entry;
+				if (local && !p->pack_local)
+					goto skip_entry;
+				if (ignore_packed_keep && p->pack_local && p->pack_keep)
+					goto skip_entry;
 			}
 		}
 	}
@@ -956,6 +987,11 @@ static int add_object_entry_1(const unsigned char *sha1, enum object_type type,
 	display_progress(progress_state, nr_objects);
 
 	return 1;
+
+skip_entry:
+	kh_del_sha1(packed_objects, ix);
+	write_bitmap_index = 0;
+	return 0;
 }
 
 static int add_object_entry(const unsigned char *sha1, enum object_type type,
@@ -1266,6 +1302,7 @@ static void check_object(struct object_entry *entry)
 		used = unpack_object_header_buffer(buf, avail,
 						   &entry->in_pack_type,
 						   &entry->size);
+
 		if (used == 0)
 			goto give_up;
 
@@ -2197,6 +2234,10 @@ static void show_commit(struct commit *commit, void *data)
 {
 	add_object_entry(commit->object.sha1, OBJ_COMMIT, NULL, 0);
 	commit->object.flags |= OBJECT_ADDED;
+
+	if (write_bitmap_index) {
+		index_commit_for_bitmap(commit);
+	}
 }
 
 static void show_object(struct object *obj,
@@ -2366,6 +2407,7 @@ static void get_object_list(int ac, const char **av)
 		if (*line == '-') {
 			if (!strcmp(line, "--not")) {
 				flags ^= UNINTERESTING;
+				write_bitmap_index = 0;
 				continue;
 			}
 			die("not a rev '%s'", line);
@@ -2378,10 +2420,30 @@ static void get_object_list(int ac, const char **av)
 		uint32_t size_hint;
 
 		if (!prepare_bitmap_walk(&revs, &size_hint)) {
+			/*
+			 * Preallocate the data structures.
+			 * We've successfully generated a bitmap with the reachability
+			 * information for this revlist, so `size_hint` contains its
+			 * cardinality (number of bits set).
+			 *
+			 * We can use this cardinality to resize the `objects` array and
+			 * the `packed_objects` hash table to their final sizes, and
+			 * prevent costly reallocations as we yield each object
+			 * from the bitmap. This is not necessary but speeds up greatly
+			 * the `traverse_bitmap_commit_list` run.
+			 */
+
+			/*
+			 * The hash table needs to be upper_limit % bigger than the final
+			 * size (rounded up) to keep a reasonable amount of collisions
+			 */
 			khint_t new_hash_size = (size_hint * (1.0 / __ac_HASH_UPPER)) + 0.5;
 			kh_resize_sha1(packed_objects, new_hash_size);
 
-			nr_alloc = (size_hint + 63) & ~63;
+			/*
+			 * The objects array is allocated to the closest 8-byte boundary.
+			 */
+			nr_alloc = (size_hint + 7) & ~7;
 			objects = xrealloc(objects, nr_alloc * sizeof(struct object_entry *));
 
 			traverse_bitmap_commit_list(&add_object_entry_1);
@@ -2588,6 +2650,17 @@ int cmd_pack_objects(int argc, const char **argv, const char *prefix)
 		die("--keep-unreachable and --unpack-unreachable are incompatible.");
 
 	if (bitmap_support) {
+		if (!pack_to_stdout && rev_list_all)
+			write_bitmap_index = 1;
+
+		/*
+		 * Only speed up the revision walk using bitmaps if we're packing
+		 * to stdout (i.e. during a streaming pack-objects invocation for
+		 * upload-pack).
+		 *
+		 * Normal invocations that write packfiles to disk need a full rev-walk
+		 * so we can write out their pack index and (possibly) their bitmap index.
+		 */
 		if (use_internal_rev_list && pack_to_stdout)
 			use_bitmap_index = 1;
 	}

@@ -31,6 +31,8 @@ struct bitmap_disk_header {
 
 static const char BITMAP_IDX_SIGNATURE[] = {'B', 'I', 'T', 'M'};;
 
+#define NEEDS_BITMAP (1u<<22)
+
 enum pack_bitmap_opts {
 	BITMAP_OPT_FULL_DAG = 1,
 	BITMAP_OPT_HASH_CACHE = 8
@@ -47,5 +49,12 @@ void traverse_bitmap_commit_list(show_reachable_fn show_reachable);
 int prepare_bitmap_walk(struct rev_info *revs, uint32_t *result_size);
 void test_bitmap_walk(struct rev_info *revs);
 char *pack_bitmap_filename(struct packed_git *p);
+
+void bitmap_writer_show_progress(int show);
+void bitmap_writer_build_type_index(struct pack_idx_entry **index, uint32_t index_nr);
+void bitmap_writer_select_commits(struct commit **indexed_commits,
+		unsigned int indexed_commits_nr, int max_bitmaps);
+void bitmap_writer_build(khash_sha1 *packed_objects);
+void bitmap_writer_finish(const char *filename, unsigned char sha1[], uint16_t flags);
 
 #endif
