@@ -3,6 +3,8 @@
 #include "diff.h"
 #include "revision.h"
 #include "list-objects.h"
+#include "pack.h"
+#include "pack-bitmap.h"
 #include "builtin.h"
 #include "log-tree.h"
 #include "graph.h"
@@ -256,6 +258,17 @@ static int show_bisect_vars(struct rev_list_info *info, int reaches, int all)
 	return 0;
 }
 
+static int show_object_fast(
+	const unsigned char *sha1,
+	enum object_type type,
+	uint32_t hash, int exclude,
+	struct packed_git *found_pack,
+	off_t found_offset)
+{
+	fprintf(stdout, "%ss\n", sha1_to_hex(sha1));
+	return 1;
+}
+
 int cmd_rev_list(int argc, const char **argv, const char *prefix)
 {
 	struct rev_info revs;
@@ -264,6 +277,7 @@ int cmd_rev_list(int argc, const char **argv, const char *prefix)
 	int bisect_list = 0;
 	int bisect_show_vars = 0;
 	int bisect_find_all = 0;
+	int use_bitmaps = 0;
 
 	git_config(git_default_config, NULL);
 	init_revisions(&revs, prefix);
@@ -305,8 +319,15 @@ int cmd_rev_list(int argc, const char **argv, const char *prefix)
 			bisect_show_vars = 1;
 			continue;
 		}
+		if (!strcmp(arg, "--use-bitmaps")) {
+			use_bitmaps = 1;
+			continue;
+		}
+		if (!strcmp(arg, "--test-bitmap")) {
+			test_bitmap_walk(&revs);
+			return 0;
+		}
 		usage(rev_list_usage);
-
 	}
 	if (revs.commit_format != CMIT_FMT_UNSPECIFIED) {
 		/* The command line has a --pretty  */
@@ -331,6 +352,11 @@ int cmd_rev_list(int argc, const char **argv, const char *prefix)
 			      revs.grep_filter.header_list);
 	if (bisect_list)
 		revs.limited = 1;
+
+	if (use_bitmaps && !prepare_bitmap_walk(&revs, NULL)) {
+		traverse_bitmap_commit_list(&show_object_fast);
+		return 0;
+	}
 
 	if (prepare_revision_walk(&revs))
 		die("revision walk setup failed");
