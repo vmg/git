@@ -653,6 +653,8 @@ extern char *sha1_pack_index_name(const unsigned char *sha1);
 extern const char *find_unique_abbrev(const unsigned char *sha1, int);
 extern const unsigned char null_sha1[20];
 
+extern uint32_t pack_name_hash(const char *name);
+
 static inline int hashcmp(const unsigned char *sha1, const unsigned char *sha2)
 {
 	int i;

@@ -854,26 +854,6 @@ static struct object_entry *locate_object_entry(const unsigned char *sha1)
 	return NULL;
 }
 
-static unsigned name_hash(const char *name)
-{
-	unsigned c, hash = 0;
-
-	if (!name)
-		return 0;
-
-	/*
-	 * This effectively just creates a sortable number from the
-	 * last sixteen non-whitespace characters. Last characters
-	 * count "most", so things that end in ".c" sort together.
-	 */
-	while ((c = *name++) != 0) {
-		if (isspace(c))
-			continue;
-		hash = (hash >> 2) + (c << 24);
-	}
-	return hash;
-}
-
 static void setup_delta_attr_check(struct git_attr_check *check)
 {
 	static struct git_attr *attr_delta;
@@ -977,7 +957,7 @@ static int add_object_entry_1(const unsigned char *sha1, enum object_type type,
 static int add_object_entry(const unsigned char *sha1, enum object_type type,
 			    const char *name, int exclude)
 {
-	if (add_object_entry_1(sha1, type, name_hash(name), exclude, NULL, 0)) {
+	if (add_object_entry_1(sha1, type, pack_name_hash(name), exclude, NULL, 0)) {
 		struct object_entry *entry = objects[nr_objects - 1];
 
 		if (name && no_try_delta(name))
@@ -1186,7 +1166,7 @@ static void add_preferred_base_object(const char *name)
 {
 	struct pbase_tree *it;
 	int cmplen;
-	unsigned hash = name_hash(name);
+	unsigned hash = pack_name_hash(name);
 
 	if (!num_preferred_base || check_pbase_path(hash))
 		return;
