@@ -19,6 +19,7 @@
 #include "streaming.h"
 #include "thread-utils.h"
 #include "khash.h"
+#include "pack-bitmap.h"
 
 static const char *pack_usage[] = {
 	N_("git pack-objects --stdout [options...] [< ref-list | < object-list]"),
@@ -82,6 +83,9 @@ static int num_preferred_base;
 static struct progress *progress_state;
 static int pack_compression_level = Z_DEFAULT_COMPRESSION;
 static int pack_compression_seen;
+
+static int bitmap_support;
+static int use_bitmap_index;
 
 static unsigned long delta_cache_size = 0;
 static unsigned long max_delta_cache_size = 256 * 1024 * 1024;
@@ -2131,6 +2135,10 @@ static int git_pack_config(const char *k, const char *v, void *cb)
 		cache_max_small_delta_size = git_config_int(k, v);
 		return 0;
 	}
+	if (!strcmp(k, "pack.usebitmaps")) {
+		bitmap_support = git_config_bool(k, v);
+		return 0;
+	}
 	if (!strcmp(k, "pack.threads")) {
 		delta_search_threads = git_config_int(k, v);
 		if (delta_search_threads < 0)
@@ -2366,8 +2374,24 @@ static void get_object_list(int ac, const char **av)
 			die("bad revision '%s'", line);
 	}
 
+	if (use_bitmap_index) {
+		uint32_t size_hint;
+
+		if (!prepare_bitmap_walk(&revs, &size_hint)) {
+			khint_t new_hash_size = (size_hint * (1.0 / __ac_HASH_UPPER)) + 0.5;
+			kh_resize_sha1(packed_objects, new_hash_size);
+
+			nr_alloc = (size_hint + 63) & ~63;
+			objects = xrealloc(objects, nr_alloc * sizeof(struct object_entry *));
+
+			traverse_bitmap_commit_list(&add_object_entry_1);
+			return;
+		}
+	}
+
 	if (prepare_revision_walk(&revs))
 		die("revision walk setup failed");
+
 	mark_edges_uninteresting(revs.commits, &revs, show_edge);
 	traverse_commit_list(&revs, show_commit, show_object, NULL);
 
@@ -2495,6 +2519,8 @@ int cmd_pack_objects(int argc, const char **argv, const char *prefix)
 			    N_("pack compression level")),
 		OPT_SET_INT(0, "keep-true-parents", &grafts_replace_parents,
 			    N_("do not hide commits by grafts"), 0),
+		OPT_BOOL(0, "bitmaps", &bitmap_support,
+			 N_("enable support for bitmap optimizations")),
 		OPT_END(),
 	};
 
@@ -2560,6 +2586,11 @@ int cmd_pack_objects(int argc, const char **argv, const char *prefix)
 
 	if (keep_unreachable && unpack_unreachable)
 		die("--keep-unreachable and --unpack-unreachable are incompatible.");
+
+	if (bitmap_support) {
+		if (use_internal_rev_list && pack_to_stdout)
+			use_bitmap_index = 1;
+	}
 
 	if (progress && all_progress_implied)
 		progress = 2;
