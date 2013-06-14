@@ -777,7 +777,12 @@ static int add_parents_to_list(struct rev_info *revs, struct commit *commit,
 
 	if (commit->object.flags & ADDED)
 		return 0;
+
 	commit->object.flags |= ADDED;
+
+	if (revs->include_check &&
+		!revs->include_check(commit, revs->include_check_data))
+		return 0;
 
 	/*
 	 * If the commit is uninteresting, don't try to
