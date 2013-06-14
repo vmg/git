@@ -426,6 +426,7 @@ static void handle_internal_command(int argc, const char **argv)
 		{ "verify-tag", cmd_verify_tag, RUN_SETUP },
 		{ "version", cmd_version },
 		{ "whatchanged", cmd_whatchanged, RUN_SETUP },
+		{ "write-bitmap", cmd_write_bitmap, RUN_SETUP },
 		{ "write-tree", cmd_write_tree, RUN_SETUP },
 	};
 	int i;
