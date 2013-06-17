@@ -45,6 +45,8 @@ typedef int (*show_reachable_fn)(
 	struct packed_git *found_pack,
 	off_t found_offset);
 
+void count_bitmap_commit_list(
+	uint32_t *commits, uint32_t *trees, uint32_t *blobs, uint32_t *tags);
 void traverse_bitmap_commit_list(show_reachable_fn show_reachable);
 int prepare_bitmap_walk(struct rev_info *revs, uint32_t *result_size);
 void test_bitmap_walk(struct rev_info *revs);

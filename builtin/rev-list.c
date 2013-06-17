@@ -354,8 +354,15 @@ int cmd_rev_list(int argc, const char **argv, const char *prefix)
 		revs.limited = 1;
 
 	if (use_bitmaps && !prepare_bitmap_walk(&revs, NULL)) {
-		traverse_bitmap_commit_list(&show_object_fast);
-		return 0;
+		if (revs.count && !revs.left_right && !revs.cherry_mark) {
+			uint32_t commit_count;
+			count_bitmap_commit_list(&commit_count, NULL, NULL, NULL);
+			printf("%d\n", commit_count);
+			return 0;
+		} else {
+			traverse_bitmap_commit_list(&show_object_fast);
+			return 0;
+		}
 	}
 
 	if (prepare_revision_walk(&revs))

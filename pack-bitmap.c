@@ -739,6 +739,43 @@ void traverse_bitmap_commit_list(show_reachable_fn show_reachable)
 	bitmap_git.result = NULL;
 }
 
+static uint32_t count_object_type(
+	struct bitmap *objects,
+	struct ewah_bitmap *type_filter)
+{
+	size_t i = 0, count = 0;
+	struct ewah_iterator it;
+	eword_t filter;
+
+	ewah_iterator_init(&it, type_filter);
+
+	while (i < objects->word_alloc && ewah_iterator_next(&filter, &it)) {
+		eword_t word = objects->words[i++] & filter;
+		count += ewah_bit_popcount64(word);
+	}
+
+	return count;
+}
+
+void count_bitmap_commit_list(
+	uint32_t *commits, uint32_t *trees, uint32_t *blobs, uint32_t *tags)
+{
+	if (!bitmap_git.result)
+		die("Tried to count bitmap without setting it up first");
+
+	if (commits)
+		*commits = count_object_type(bitmap_git.result, bitmap_git.commits);
+
+	if (trees)
+		*trees = count_object_type(bitmap_git.result, bitmap_git.trees);
+
+	if (blobs)
+		*blobs = count_object_type(bitmap_git.result, bitmap_git.blobs);
+
+	if (tags)
+		*tags = count_object_type(bitmap_git.result, bitmap_git.tags);
+}
+
 struct bitmap_test_data {
 	struct bitmap *base;
 	struct progress *prg;
