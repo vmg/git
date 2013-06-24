@@ -7,14 +7,39 @@ test_description='Test various path utilities'
 
 . ./test-lib.sh
 
+mingw_path() {
+	case $2 in
+	NO_MINGW)
+		echo "$1"
+		;;
+	*)
+		test-path-utils mingw_path "$1"
+		;;
+	esac
+}
+
+get_prereq_flag() {
+	case $1 in
+	POSIX)
+		echo $1
+		;;
+	*)
+		;;
+	esac
+}
+
 norm_path() {
-	test_expect_success $3 "normalize path: $1 => $2" \
-	"test \"\$(test-path-utils normalize_path_copy '$1')\" = '$2'"
+	expected=$(mingw_path "$2" "$3")
+	prereq=$(get_prereq_flag $3)
+	test_expect_success $prereq "normalize path: $1 => $2" \
+	"test \"\$(test-path-utils normalize_path_copy '$1')\" = '$expected'"
 }
 
 relative_path() {
-	test_expect_success $4 "relative path: $1 $2 => $3" \
-	"test \"\$(test-path-utils relative_path '$1' '$2')\" = '$3'"
+	expected=$(mingw_path "$3" "$4")
+	prereq=$(get_prereq_flag $4)
+	test_expect_success $prereq "relative path: $1 $2 => $3" \
+	"test \"\$(test-path-utils relative_path '$1' '$2')\" = '$expected'"
 }
 
 # On Windows, we are using MSYS's bash, which mangles the paths.
@@ -39,8 +64,8 @@ ancestor() {
 	 test \"\$actual\" = '$expected'"
 }
 
-# Absolute path tests must be skipped on Windows because due to path mangling
-# the test program never sees a POSIX-style absolute path
+# Some absolute path tests should be skipped on Windows due to path mangling
+# on POSIX-style absolute paths
 case $(uname -s) in
 *MINGW*)
 	;;
@@ -73,10 +98,10 @@ norm_path d1/s1//../s2/../../d2 d2
 norm_path d1/.../d2 d1/.../d2
 norm_path d1/..././../d2 d1/d2
 
-norm_path / / POSIX
-norm_path // / POSIX
-norm_path /// / POSIX
-norm_path /. / POSIX
+norm_path / /
+norm_path // / NO_MINGW
+norm_path /// / NO_MINGW
+norm_path /. /
 norm_path /./ / POSIX
 norm_path /./.. ++failed++ POSIX
 norm_path /../. ++failed++ POSIX
@@ -84,19 +109,19 @@ norm_path /./../.// ++failed++ POSIX
 norm_path /dir/.. / POSIX
 norm_path /dir/sub/../.. / POSIX
 norm_path /dir/sub/../../.. ++failed++ POSIX
-norm_path /dir /dir POSIX
-norm_path /dir// /dir/ POSIX
-norm_path /./dir /dir POSIX
-norm_path /dir/. /dir/ POSIX
-norm_path /dir///./ /dir/ POSIX
-norm_path /dir//sub/.. /dir/ POSIX
-norm_path /dir/sub/../ /dir/ POSIX
+norm_path /dir /dir
+norm_path /dir// /dir/
+norm_path /./dir /dir
+norm_path /dir/. /dir/
+norm_path /dir///./ /dir/
+norm_path /dir//sub/.. /dir/
+norm_path /dir/sub/../ /dir/
 norm_path //dir/sub/../. /dir/ POSIX
-norm_path /dir/s1/../s2/ /dir/s2/ POSIX
-norm_path /d1/s1///s2/..//../s3/ /d1/s3/ POSIX
-norm_path /d1/s1//../s2/../../d2 /d2 POSIX
-norm_path /d1/.../d2 /d1/.../d2 POSIX
-norm_path /d1/..././../d2 /d1/d2 POSIX
+norm_path /dir/s1/../s2/ /dir/s2/
+norm_path /d1/s1///s2/..//../s3/ /d1/s3/
+norm_path /d1/s1//../s2/../../d2 /d2
+norm_path /d1/.../d2 /d1/.../d2
+norm_path /d1/..././../d2 /d1/d2
 
 ancestor / / -1
 ancestor /foo / 0
@@ -197,8 +222,8 @@ relative_path /a	/a/b		../
 relative_path /		/a/b/		../../
 relative_path /a/c	/a/b/		../c
 relative_path /a/c	/a/b		../c
-relative_path /a/b	"<empty>"	/a/b	POSIX
-relative_path /a/b 	"<null>"	/a/b	POSIX
+relative_path /a/b	"<empty>"	/a/b
+relative_path /a/b 	"<null>"	/a/b
 relative_path "<empty>"	/a/b		./
 relative_path "<empty>"	"<empty>"	./
 relative_path "<empty>"	"<null>"	./
