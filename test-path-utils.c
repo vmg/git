@@ -28,6 +28,19 @@ static int normalize_ceiling_entry(struct string_list_item *item, void *unused)
 	return 1;
 }
 
+static void normalize_argv_string(const char **var, const char *input)
+{
+	if (!strcmp(input, "<null>"))
+		*var = NULL;
+	else if (!strcmp(input, "<empty>"))
+		*var = "";
+	else
+		*var = input;
+
+	if (*var && (**var == '<' || **var == '('))
+		die("Bad value: %s\n", input);
+}
+
 int main(int argc, char **argv)
 {
 	if (argc == 3 && !strcmp(argv[1], "normalize_path_copy")) {
@@ -100,6 +113,18 @@ int main(int argc, char **argv)
 	if (argc == 4 && !strcmp(argv[1], "strip_path_suffix")) {
 		char *prefix = strip_path_suffix(argv[2], argv[3]);
 		printf("%s\n", prefix ? prefix : "(null)");
+		return 0;
+	}
+
+	if (argc == 4 && !strcmp(argv[1], "relative_path")) {
+		const char *abs, *base, *rel;
+		normalize_argv_string(&abs, argv[2]);
+		normalize_argv_string(&base, argv[3]);
+		rel = relative_path(abs, base);
+		if (!rel)
+			puts("(null)");
+		else
+			puts(strlen(rel) > 0 ? rel : "(empty)");
 		return 0;
 	}
 
