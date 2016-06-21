@@ -62,12 +62,8 @@ test_check_precond () {
 		test_done
 	fi
 
-	if [ ! -f "$GIT_BUILD_DIR"/git-remote-mediawiki ];
-	then
-		echo "No remote mediawiki for git found. Copying it in git"
-		echo "cp $GIT_BUILD_DIR/contrib/mw-to-git/git-remote-mediawiki $GIT_BUILD_DIR/"
-		ln -s "$GIT_BUILD_DIR"/contrib/mw-to-git/git-remote-mediawiki "$GIT_BUILD_DIR"
-	fi
+	GIT_EXEC_PATH=$(cd "$(dirname "$0")" && cd "../.." && pwd)
+	PATH="$GIT_EXEC_PATH"'/bin-wrapper:'"$PATH"
 
 	if [ ! -d "$WIKI_DIR_INST/$WIKI_DIR_NAME" ];
 	then
@@ -94,8 +90,8 @@ test_diff_directories () {
 #
 # Check that <dir> contains exactly <N> files
 test_contains_N_files () {
-	if test `ls -- "$1" | wc -l` -ne "$2"; then
-		echo "directory $1 sould contain $2 files"
+	if test $(ls -- "$1" | wc -l) -ne "$2"; then
+		echo "directory $1 should contain $2 files"
 		echo "it contains these files:"
 		ls "$1"
 		false
@@ -293,7 +289,6 @@ start_lighttpd () {
 # Kill daemon lighttpd and removes files and folders associated.
 stop_lighttpd () {
 	test -f "$WEB_TMP/pid" && kill $(cat "$WEB_TMP/pid")
-	rm -rf "$WEB"
 }
 
 # Create the SQLite database of the MediaWiki. If the database file already
@@ -345,10 +340,10 @@ wiki_install () {
 			"http://download.wikimedia.org/mediawiki/$MW_VERSION_MAJOR/"\
 			"$MW_FILENAME. "\
 			"Please fix your connection and launch the script again."
-		echo "$MW_FILENAME downloaded in `pwd`. "\
+		echo "$MW_FILENAME downloaded in $(pwd). "\
 			"You can delete it later if you want."
 	else
-		echo "Reusing existing $MW_FILENAME downloaded in `pwd`."
+		echo "Reusing existing $MW_FILENAME downloaded in $(pwd)."
 	fi
 	archive_abs_path=$(pwd)/$MW_FILENAME
 	cd "$WIKI_DIR_INST/$WIKI_DIR_NAME/" ||
@@ -419,6 +414,7 @@ wiki_reset () {
 wiki_delete () {
 	if test $LIGHTTPD = "true"; then
 		stop_lighttpd
+		rm -fr "$WEB"
 	else
 		# Delete the wiki's directory.
 		rm -rf "$WIKI_DIR_INST/$WIKI_DIR_NAME" ||

@@ -336,8 +336,26 @@ $home_link_str::
 	used as the first component of gitweb's "breadcrumb trail":
 	`<home link> / <project> / <action>`.  Can be set at build time using
 	the `GITWEB_HOME_LINK_STR` variable.  By default it is set to "projects",
-	as this link leads to the list of projects.  Other popular choice it to
-	set it to the name of site.
+	as this link leads to the list of projects.  Another popular choice is to
+	set it to the name of site.  Note that it is treated as raw HTML so it
+	should not be set from untrusted sources.
+
+@extra_breadcrumbs::
+	Additional links to be added to the start of the breadcrumb trail before
+	the home link, to pages that are logically "above" the gitweb projects
+	list, such as the organization and department which host the gitweb
+	server. Each element of the list is a reference to an array, in which
+	element 0 is the link text (equivalent to `$home_link_str`) and element
+	1 is the target URL (equivalent to `$home_link`).
++
+For example, the following setting produces a breadcrumb trail like
+"home / dev / projects / ..." where "projects" is the home link.
+----------------------------------------------------------------------------
+    our @extra_breadcrumbs = (
+      [ 'home' => 'https://www.example.org/' ],
+      [ 'dev'  => 'https://dev.example.org/' ],
+    );
+----------------------------------------------------------------------------
 
 $logo_url::
 $logo_label::
@@ -464,12 +482,12 @@ project config.  Per-repository configuration takes precedence over value
 composed from `@git_base_url_list` elements and project name.
 +
 You can setup one single value (single entry/item in this list) at build
-time by setting the `GITWEB_BASE_URL` built-time configuration variable.
+time by setting the `GITWEB_BASE_URL` build-time configuration variable.
 By default it is set to (), i.e. an empty list.  This means that gitweb
 would not try to create project URL (to fetch) from project name.
 
 $projects_list_group_categories::
-	Whether to enables the grouping of projects by category on the project
+	Whether to enable the grouping of projects by category on the project
 	list page. The category of a project is determined by the
 	`$GIT_DIR/category` file or the `gitweb.category` variable in each
 	repository's configuration.  Disabled by default (set to 0).
@@ -612,13 +630,13 @@ need to set this element to empty list i.e. `[]`.
 
 override::
 	If this field has a true value then the given feature is
-	overriddable, which means that it can be configured
+	overridable, which means that it can be configured
 	(or enabled/disabled) on a per-repository basis.
 +
 Usually given "<feature>" is configurable via the `gitweb.<feature>`
 config variable in the per-repository Git configuration file.
 +
-*Note* that no feature is overriddable by default.
+*Note* that no feature is overridable by default.
 
 sub::
 	Internal detail of implementation.  What is important is that
@@ -688,7 +706,7 @@ show-sizes::
 	I/O.  Enabled by default.
 +
 This feature can be configured on a per-repository basis via
-repository's `gitweb.showsizes` configuration variable (boolean).
+repository's `gitweb.showSizes` configuration variable (boolean).
 
 patches::
 	Enable and configure "patches" view, which displays list of commits in email
@@ -804,18 +822,18 @@ timed::
 Project specific override is not supported.
 
 javascript-timezone::
-	Enable and configure the ability to change a common timezone for dates
+	Enable and configure the ability to change a common time zone for dates
 	in gitweb output via JavaScript.  Dates in gitweb output include
 	authordate and committerdate in "commit", "commitdiff" and "log"
 	views, and taggerdate in "tag" view.  Enabled by default.
 +
-The value is a list of three values: a default timezone (for if the client
-hasn't selected some other timezone and saved it in a cookie), a name of cookie
-where to store selected timezone, and a CSS class used to mark up
+The value is a list of three values: a default time zone (for if the client
+hasn't selected some other time zone and saved it in a cookie), a name of cookie
+where to store selected time zone, and a CSS class used to mark up
 dates for manipulation.  If you want to turn this feature off, set "default"
 to empty list: `[]`.
 +
-Typical gitweb config files will only change starting (default) timezone,
+Typical gitweb config files will only change starting (default) time zone,
 and leave other elements at their default values:
 +
 ---------------------------------------------------------------------------
@@ -825,11 +843,48 @@ $feature{'javascript-timezone'}{'default'}[0] = "utc";
 The example configuration presented here is guaranteed to be backwards
 and forward compatible.
 +
-Timezone values can be "local" (for local timezone that browser uses), "utc"
+Time zone values can be "local" (for local time zone that browser uses), "utc"
 (what gitweb uses when JavaScript or this feature is disabled), or numerical
-timezones in the form of "+/-HHMM", such as "+0200".
+time zones in the form of "+/-HHMM", such as "+0200".
 +
 Project specific override is not supported.
+
+extra-branch-refs::
+	List of additional directories under "refs" which are going to
+	be used as branch refs. For example if you have a gerrit setup
+	where all branches under refs/heads/ are official,
+	push-after-review ones and branches under refs/sandbox/,
+	refs/wip and refs/other are user ones where permissions are
+	much wider, then you might want to set this variable as
+	follows:
++
+--------------------------------------------------------------------------------
+$feature{'extra-branch-refs'}{'default'} =
+	['sandbox', 'wip', 'other'];
+--------------------------------------------------------------------------------
++
+This feature can be configured on per-repository basis after setting
+$feature{'extra-branch-refs'}{'override'} to true, via repository's
+`gitweb.extraBranchRefs` configuration variable, which contains a
+space separated list of refs. An example:
++
+--------------------------------------------------------------------------------
+[gitweb]
+	extraBranchRefs = sandbox wip other
+--------------------------------------------------------------------------------
++
+The gitweb.extraBranchRefs is actually a multi-valued configuration
+variable, so following example is also correct and the result is the
+same as of the snippet above:
++
+--------------------------------------------------------------------------------
+[gitweb]
+	extraBranchRefs = sandbox
+	extraBranchRefs = wip other
+--------------------------------------------------------------------------------
++
+It is an error to specify a ref that does not pass "git check-ref-format"
+scrutiny. Duplicated values are filtered.
 
 
 EXAMPLES
@@ -849,7 +904,7 @@ the following in your GITWEB_CONFIG file:
 	$feature{'snapshot'}{'override'} = 1;
 
 If you allow overriding for the snapshot feature, you can specify which
-snapshot formats are globally disabled. You can also add any command line
+snapshot formats are globally disabled. You can also add any command-line
 options you want (such as setting the compression level). For instance, you
 can disable Zip compressed snapshots and set *gzip*(1) to run at level 6 by
 adding the following lines to your gitweb configuration file:

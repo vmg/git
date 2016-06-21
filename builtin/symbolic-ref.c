@@ -4,8 +4,8 @@
 #include "parse-options.h"
 
 static const char * const git_symbolic_ref_usage[] = {
-	N_("git symbolic-ref [options] name [ref]"),
-	N_("git symbolic-ref -d [-q] name"),
+	N_("git symbolic-ref [<options>] <name> [<ref>]"),
+	N_("git symbolic-ref -d [-q] <name>"),
 	NULL
 };
 
@@ -13,7 +13,7 @@ static int check_symref(const char *HEAD, int quiet, int shorten, int print)
 {
 	unsigned char sha1[20];
 	int flag;
-	const char *refname = resolve_ref_unsafe(HEAD, sha1, 0, &flag);
+	const char *refname = resolve_ref_unsafe(HEAD, 0, sha1, &flag);
 
 	if (!refname)
 		die("No such ref: %s", HEAD);
@@ -47,7 +47,7 @@ int cmd_symbolic_ref(int argc, const char **argv, const char *prefix)
 	git_config(git_default_config, NULL);
 	argc = parse_options(argc, argv, prefix, options,
 			     git_symbolic_ref_usage, 0);
-	if (msg &&!*msg)
+	if (msg && !*msg)
 		die("Refusing to perform update with empty message");
 
 	if (delete) {
@@ -65,9 +65,9 @@ int cmd_symbolic_ref(int argc, const char **argv, const char *prefix)
 		break;
 	case 2:
 		if (!strcmp(argv[0], "HEAD") &&
-		    prefixcmp(argv[1], "refs/"))
+		    !starts_with(argv[1], "refs/"))
 			die("Refusing to point HEAD outside of refs/");
-		create_symref(argv[0], argv[1], msg);
+		ret = !!create_symref(argv[0], argv[1], msg);
 		break;
 	default:
 		usage_with_options(git_symbolic_ref_usage, options);

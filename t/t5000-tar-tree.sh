@@ -3,7 +3,7 @@
 # Copyright (C) 2005 Rene Scharfe
 #
 
-test_description='git tar-tree and git get-tar-commit-id test
+test_description='git archive and git get-tar-commit-id test
 
 This test covers the topics of file contents, commit date handling and
 commit id embedding:
@@ -13,11 +13,11 @@ commit id embedding:
   binary file (/bin/sh).  Only paths shorter than 99 characters are
   used.
 
-  git tar-tree applies the commit date to every file in the archive it
+  git archive applies the commit date to every file in the archive it
   creates.  The test sets the commit date to a specific value and checks
   if the tar archive contains that value.
 
-  When giving git tar-tree a commit id (in contrast to a tree id) it
+  When giving git archive a commit id (in contrast to a tree id) it
   embeds this commit id into the tar archive as a comment.  The test
   checks the ability of git get-tar-commit-id to figure it out from the
   tar file.
@@ -25,8 +25,6 @@ commit id embedding:
 '
 
 . ./test-lib.sh
-GZIP=${GZIP:-gzip}
-GUNZIP=${GUNZIP:-gzip -d}
 
 SUBSTFORMAT=%H%n
 
@@ -38,6 +36,8 @@ test_lazy_prereq TAR_NEEDS_PAX_FALLBACK '
 		test -f PaxHeaders.1791/file
 	)
 '
+
+test_lazy_prereq GZIP 'gzip --version'
 
 get_pax_header() {
 	file=$1
@@ -72,7 +72,7 @@ check_tar() {
 			for header in *.paxheader
 			do
 				data=${header%.paxheader}.data &&
-				if test -h $data -o -e $data
+				if test -h $data || test -e $data
 				then
 					path=$(get_pax_header $header path) &&
 					if test -n "$path"
@@ -101,7 +101,7 @@ test_expect_success \
      ten=0123456789 && hundred=$ten$ten$ten$ten$ten$ten$ten$ten$ten$ten &&
      echo long filename >a/four$hundred &&
      mkdir a/bin &&
-     cp /bin/sh a/bin &&
+     test-genrandom "frotz" 500000 >a/bin/sh &&
      printf "A\$Format:%s\$O" "$SUBSTFORMAT" >a/substfile1 &&
      printf "A not substituted O" >a/substfile2 &&
      if test_have_prereq SYMLINKS; then
@@ -119,14 +119,10 @@ test_expect_success \
     'echo ignore me >a/ignored &&
      echo ignored export-ignore >.git/info/attributes'
 
-test_expect_success \
-    'add files to repository' \
-    'find a -type f | xargs git update-index --add &&
-     find a -type l | xargs git update-index --add &&
-     treeid=`git write-tree` &&
-     echo $treeid >treeid &&
-     git update-ref HEAD $(TZ=GMT GIT_COMMITTER_DATE="2005-05-27 22:00:00" \
-     git commit-tree $treeid </dev/null)'
+test_expect_success 'add files to repository' '
+	git add a &&
+	GIT_COMMITTER_DATE="2005-05-27 22:00" git commit -m initial
+'
 
 test_expect_success 'setup export-subst' '
 	echo "substfile?" export-subst >>.git/info/attributes &&
@@ -164,7 +160,7 @@ check_tar with_olde-prefix olde-
 test_expect_success 'git archive on large files' '
     test_config core.bigfilethreshold 1 &&
     git archive HEAD >b3.tar &&
-    test_cmp b.tar b3.tar
+    test_cmp_bin b.tar b3.tar
 '
 
 test_expect_success \
@@ -173,15 +169,15 @@ test_expect_success \
 
 test_expect_success \
     'git archive vs. the same in a bare repo' \
-    'test_cmp b.tar b3.tar'
+    'test_cmp_bin b.tar b3.tar'
 
 test_expect_success 'git archive with --output' \
     'git archive --output=b4.tar HEAD &&
-    test_cmp b.tar b4.tar'
+    test_cmp_bin b.tar b4.tar'
 
 test_expect_success 'git archive --remote' \
     'git archive --remote=. HEAD >b5.tar &&
-    test_cmp b.tar b5.tar'
+    test_cmp_bin b.tar b5.tar'
 
 test_expect_success \
     'validate file modification time' \
@@ -196,19 +192,9 @@ test_expect_success \
     'git get-tar-commit-id <b.tar >b.commitid &&
      test_cmp .git/$(git symbolic-ref HEAD) b.commitid'
 
-test_expect_success 'git tar-tree' '
-	git tar-tree HEAD >tar-tree.tar &&
-	test_cmp b.tar tar-tree.tar
-'
-
-test_expect_success 'git tar-tree with prefix' '
-	git tar-tree HEAD prefix >tar-tree_with_prefix.tar &&
-	test_cmp with_prefix.tar tar-tree_with_prefix.tar
-'
-
 test_expect_success 'git archive with --output, override inferred format' '
 	git archive --format=tar --output=d4.zip HEAD &&
-	test_cmp b.tar d4.zip
+	test_cmp_bin b.tar d4.zip
 '
 
 test_expect_success \
@@ -217,10 +203,19 @@ test_expect_success \
 
 test_expect_success 'clients cannot access unreachable commits' '
 	test_commit unreachable &&
-	sha1=`git rev-parse HEAD` &&
+	sha1=$(git rev-parse HEAD) &&
 	git reset --hard HEAD^ &&
 	git archive $sha1 >remote.tar &&
 	test_must_fail git archive --remote=. $sha1 >remote.tar
+'
+
+test_expect_success 'upload-archive can allow unreachable commits' '
+	test_commit unreachable1 &&
+	sha1=$(git rev-parse HEAD) &&
+	git reset --hard HEAD^ &&
+	git archive $sha1 >remote.tar &&
+	test_config uploadarchive.allowUnreachable true &&
+	git archive --remote=. $sha1 >remote.tar
 '
 
 test_expect_success 'setup tar filters' '
@@ -245,41 +240,35 @@ test_expect_success 'archive --list shows only enabled remote filters' '
 test_expect_success 'invoke tar filter by format' '
 	git archive --format=tar.foo HEAD >config.tar.foo &&
 	tr ab ba <config.tar.foo >config.tar &&
-	test_cmp b.tar config.tar &&
+	test_cmp_bin b.tar config.tar &&
 	git archive --format=bar HEAD >config.bar &&
 	tr ab ba <config.bar >config.tar &&
-	test_cmp b.tar config.tar
+	test_cmp_bin b.tar config.tar
 '
 
 test_expect_success 'invoke tar filter by extension' '
 	git archive -o config-implicit.tar.foo HEAD &&
-	test_cmp config.tar.foo config-implicit.tar.foo &&
+	test_cmp_bin config.tar.foo config-implicit.tar.foo &&
 	git archive -o config-implicit.bar HEAD &&
-	test_cmp config.tar.foo config-implicit.bar
+	test_cmp_bin config.tar.foo config-implicit.bar
 '
 
 test_expect_success 'default output format remains tar' '
 	git archive -o config-implicit.baz HEAD &&
-	test_cmp b.tar config-implicit.baz
+	test_cmp_bin b.tar config-implicit.baz
 '
 
 test_expect_success 'extension matching requires dot' '
 	git archive -o config-implicittar.foo HEAD &&
-	test_cmp b.tar config-implicittar.foo
+	test_cmp_bin b.tar config-implicittar.foo
 '
 
 test_expect_success 'only enabled filters are available remotely' '
 	test_must_fail git archive --remote=. --format=tar.foo HEAD \
 		>remote.tar.foo &&
 	git archive --remote=. --format=bar >remote.bar HEAD &&
-	test_cmp remote.bar config.bar
+	test_cmp_bin remote.bar config.bar
 '
-
-if $GZIP --version >/dev/null 2>&1; then
-	test_set_prereq GZIP
-else
-	say "Skipping some tar.gz tests because gzip not found"
-fi
 
 test_expect_success GZIP 'git archive --format=tgz' '
 	git archive --format=tgz HEAD >j.tgz
@@ -287,39 +276,47 @@ test_expect_success GZIP 'git archive --format=tgz' '
 
 test_expect_success GZIP 'git archive --format=tar.gz' '
 	git archive --format=tar.gz HEAD >j1.tar.gz &&
-	test_cmp j.tgz j1.tar.gz
+	test_cmp_bin j.tgz j1.tar.gz
 '
 
 test_expect_success GZIP 'infer tgz from .tgz filename' '
 	git archive --output=j2.tgz HEAD &&
-	test_cmp j.tgz j2.tgz
+	test_cmp_bin j.tgz j2.tgz
 '
 
 test_expect_success GZIP 'infer tgz from .tar.gz filename' '
 	git archive --output=j3.tar.gz HEAD &&
-	test_cmp j.tgz j3.tar.gz
+	test_cmp_bin j.tgz j3.tar.gz
 '
 
-if $GUNZIP --version >/dev/null 2>&1; then
-	test_set_prereq GUNZIP
-else
-	say "Skipping some tar.gz tests because gunzip was not found"
-fi
-
-test_expect_success GZIP,GUNZIP 'extract tgz file' '
-	$GUNZIP -c <j.tgz >j.tar &&
-	test_cmp b.tar j.tar
+test_expect_success GZIP 'extract tgz file' '
+	gzip -d -c <j.tgz >j.tar &&
+	test_cmp_bin b.tar j.tar
 '
 
 test_expect_success GZIP 'remote tar.gz is allowed by default' '
 	git archive --remote=. --format=tar.gz HEAD >remote.tar.gz &&
-	test_cmp j.tgz remote.tar.gz
+	test_cmp_bin j.tgz remote.tar.gz
 '
 
 test_expect_success GZIP 'remote tar.gz can be disabled' '
 	git config tar.tar.gz.remote false &&
 	test_must_fail git archive --remote=. --format=tar.gz HEAD \
 		>remote.tar.gz
+'
+
+test_expect_success 'archive and :(glob)' '
+	git archive -v HEAD -- ":(glob)**/sh" >/dev/null 2>actual &&
+	cat >expect <<EOF &&
+a/
+a/bin/
+a/bin/sh
+EOF
+	test_cmp expect actual
+'
+
+test_expect_success 'catch non-matching pathspec' '
+	test_must_fail git archive -v HEAD -- "*.abc" >/dev/null
 '
 
 test_done

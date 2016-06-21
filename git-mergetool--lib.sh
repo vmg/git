@@ -1,7 +1,9 @@
-#!/bin/sh
-# git-mergetool--lib is a library for common merge tool functions
+# git-mergetool--lib is a shell library for common merge tool functions
 
 : ${MERGE_TOOLS_DIR=$(git --exec-path)/mergetools}
+
+IFS='
+'
 
 mode_ok () {
 	if diff_mode
@@ -93,7 +95,7 @@ translate_merge_tool_path () {
 check_unchanged () {
 	if test "$MERGED" -nt "$BACKUP"
 	then
-		status=0
+		return 0
 	else
 		while true
 		do
@@ -101,8 +103,8 @@ check_unchanged () {
 			printf "Was the merge successful? [y/n] "
 			read answer || return 1
 			case "$answer" in
-			y*|Y*) status=0; break ;;
-			n*|N*) status=1; break ;;
+			y*|Y*) return 0 ;;
+			n*|N*) return 1 ;;
 			esac
 		done
 	fi
@@ -120,8 +122,6 @@ setup_user_tool () {
 
 	diff_cmd () {
 		( eval $merge_tool_cmd )
-		status=$?
-		return $status
 	}
 
 	merge_cmd () {
@@ -131,20 +131,17 @@ setup_user_tool () {
 		then
 			touch "$BACKUP"
 			( eval $merge_tool_cmd )
-			status=$?
 			check_unchanged
 		else
 			( eval $merge_tool_cmd )
-			status=$?
 		fi
-		return $status
 	}
 }
 
 setup_tool () {
 	tool="$1"
 
-	# Fallback definitions, to be overriden by tools.
+	# Fallback definitions, to be overridden by tools.
 	can_merge () {
 		return 0
 	}
@@ -154,13 +151,11 @@ setup_tool () {
 	}
 
 	diff_cmd () {
-		status=1
-		return $status
+		return 1
 	}
 
 	merge_cmd () {
-		status=1
-		return $status
+		return 1
 	}
 
 	translate_merge_tool_path () {
@@ -211,7 +206,6 @@ run_merge_tool () {
 
 	merge_tool_path=$(get_merge_tool_path "$1") || exit
 	base_present="$2"
-	status=0
 
 	# Bring tool-specific functions into scope
 	setup_tool "$1" || return 1
@@ -222,7 +216,6 @@ run_merge_tool () {
 	else
 		run_diff_cmd "$1"
 	fi
-	return $status
 }
 
 # Run a either a configured or built-in diff tool
@@ -250,7 +243,8 @@ list_merge_tool_candidates () {
 		else
 			tools="opendiff kdiff3 tkdiff xxdiff meld $tools"
 		fi
-		tools="$tools gvimdiff diffuse ecmerge p4merge araxis bc3 codecompare"
+		tools="$tools gvimdiff diffuse diffmerge ecmerge"
+		tools="$tools p4merge araxis bc codecompare"
 	fi
 	case "${VISUAL:-$EDITOR}" in
 	*vim*)
@@ -263,7 +257,7 @@ list_merge_tool_candidates () {
 }
 
 show_tool_help () {
-	tool_opt="'git ${TOOL_MODE}tool --tool-<tool>'"
+	tool_opt="'git ${TOOL_MODE}tool --tool=<tool>'"
 
 	tab='	'
 	LF='
@@ -311,6 +305,7 @@ guess_merge_tool () {
 	EOF
 
 	# Loop over each candidate and stop when a valid merge tool is found.
+	IFS=' '
 	for tool in $tools
 	do
 		is_available "$tool" && echo "$tool" && return 0

@@ -9,15 +9,27 @@ USAGE="[--quiet] add [-b <branch>] [-f|--force] [--name <name>] [--reference <re
    or: $dashless [--quiet] status [--cached] [--recursive] [--] [<path>...]
    or: $dashless [--quiet] init [--] [<path>...]
    or: $dashless [--quiet] deinit [-f|--force] [--] <path>...
-   or: $dashless [--quiet] update [--init] [--remote] [-N|--no-fetch] [-f|--force] [--rebase] [--reference <repository>] [--merge] [--recursive] [--] [<path>...]
+   or: $dashless [--quiet] update [--init] [--remote] [-N|--no-fetch] [-f|--force] [--checkout|--merge|--rebase] [--reference <repository>] [--recursive] [--] [<path>...]
    or: $dashless [--quiet] summary [--cached|--files] [--summary-limit <n>] [commit] [--] [<path>...]
    or: $dashless [--quiet] foreach [--recursive] <command>
    or: $dashless [--quiet] sync [--recursive] [--] [<path>...]"
 OPTIONS_SPEC=
+SUBDIRECTORY_OK=Yes
 . git-sh-setup
 . git-sh-i18n
 . git-parse-remote
 require_work_tree
+wt_prefix=$(git rev-parse --show-prefix)
+cd_to_toplevel
+
+# Restrict ourselves to a vanilla subset of protocols; the URLs
+# we get are under control of a remote repository, and we do not
+# want them kicking off arbitrary git-remote-* programs.
+#
+# If the user has already specified a set of allowed protocols,
+# we assume they know what they're doing and use that instead.
+: ${GIT_ALLOW_PROTOCOL=file:git:http:https:ssh}
+export GIT_ALLOW_PROTOCOL
 
 command=
 branch=
@@ -32,6 +44,7 @@ nofetch=
 update=
 prefix=
 custom_name=
+depth=
 
 # The function takes at most 2 arguments. The first argument is the
 # URL that navigates to the submodule origin repo. When relative, this URL
@@ -106,44 +119,39 @@ resolve_relative_url ()
 	echo "${is_relative:+${up_path}}${remoteurl#./}"
 }
 
+# Resolve a path to be relative to another path.  This is intended for
+# converting submodule paths when git-submodule is run in a subdirectory
+# and only handles paths where the directory separator is '/'.
 #
-# Get submodule info for registered submodules
-# $@ = path to limit submodule list
-#
-module_list()
+# The output is the first argument as a path relative to the second argument,
+# which defaults to $wt_prefix if it is omitted.
+relative_path ()
 {
-	(
-		git ls-files --error-unmatch --stage -- "$@" ||
-		echo "unmatched pathspec exists"
-	) |
-	perl -e '
-	my %unmerged = ();
-	my ($null_sha1) = ("0" x 40);
-	my @out = ();
-	my $unmatched = 0;
-	while (<STDIN>) {
-		if (/^unmatched pathspec/) {
-			$unmatched = 1;
-			next;
-		}
-		chomp;
-		my ($mode, $sha1, $stage, $path) =
-			/^([0-7]+) ([0-9a-f]{40}) ([0-3])\t(.*)$/;
-		next unless $mode eq "160000";
-		if ($stage ne "0") {
-			if (!$unmerged{$path}++) {
-				push @out, "$mode $null_sha1 U\t$path\n";
-			}
-			next;
-		}
-		push @out, "$_\n";
-	}
-	if ($unmatched) {
-		print "#unmatched\n";
-	} else {
-		print for (@out);
-	}
-	'
+	local target curdir result
+	target=$1
+	curdir=${2-$wt_prefix}
+	curdir=${curdir%/}
+	result=
+
+	while test -n "$curdir"
+	do
+		case "$target" in
+		"$curdir/"*)
+			target=${target#"$curdir"/}
+			break
+			;;
+		esac
+
+		result="${result}../"
+		if test "$curdir" = "${curdir%/*}"
+		then
+			curdir=
+		else
+			curdir="${curdir%/*}"
+		fi
+	done
+
+	echo "$result$target"
 }
 
 die_if_unmatched ()
@@ -179,94 +187,6 @@ get_submodule_config () {
 	printf '%s' "${value:-$default}"
 }
 
-
-#
-# Map submodule path to submodule name
-#
-# $1 = path
-#
-module_name()
-{
-	# Do we have "submodule.<something>.path = $1" defined in .gitmodules file?
-	sm_path="$1"
-	re=$(printf '%s\n' "$1" | sed -e 's/[].[^$\\*]/\\&/g')
-	name=$( git config -f .gitmodules --get-regexp '^submodule\..*\.path$' |
-		sed -n -e 's|^submodule\.\(.*\)\.path '"$re"'$|\1|p' )
-	test -z "$name" &&
-	die "$(eval_gettext "No submodule mapping found in .gitmodules for path '\$sm_path'")"
-	echo "$name"
-}
-
-#
-# Clone a submodule
-#
-# Prior to calling, cmd_update checks that a possibly existing
-# path is not a git repository.
-# Likewise, cmd_add checks that path does not exist at all,
-# since it is the location of a new submodule.
-#
-module_clone()
-{
-	sm_path=$1
-	name=$2
-	url=$3
-	reference="$4"
-	quiet=
-	if test -n "$GIT_QUIET"
-	then
-		quiet=-q
-	fi
-
-	gitdir=
-	gitdir_base=
-	base_name=$(dirname "$name")
-
-	gitdir=$(git rev-parse --git-dir)
-	gitdir_base="$gitdir/modules/$base_name"
-	gitdir="$gitdir/modules/$name"
-
-	if test -d "$gitdir"
-	then
-		mkdir -p "$sm_path"
-		rm -f "$gitdir/index"
-	else
-		mkdir -p "$gitdir_base"
-		(
-			clear_local_git_env
-			git clone $quiet -n ${reference:+"$reference"} \
-				--separate-git-dir "$gitdir" "$url" "$sm_path"
-		) ||
-		die "$(eval_gettext "Clone of '\$url' into submodule path '\$sm_path' failed")"
-	fi
-
-	# We already are at the root of the work tree but cd_to_toplevel will
-	# resolve any symlinks that might be present in $PWD
-	a=$(cd_to_toplevel && cd "$gitdir" && pwd)/
-	b=$(cd_to_toplevel && cd "$sm_path" && pwd)/
-	# normalize Windows-style absolute paths to POSIX-style absolute paths
-	case $a in [a-zA-Z]:/*) a=/${a%%:*}${a#*:} ;; esac
-	case $b in [a-zA-Z]:/*) b=/${b%%:*}${b#*:} ;; esac
-	# Remove all common leading directories after a sanity check
-	if test "${a#$b}" != "$a" || test "${b#$a}" != "$b"; then
-		die "$(eval_gettext "Gitdir '\$a' is part of the submodule path '\$b' or vice versa")"
-	fi
-	while test "${a%%/*}" = "${b%%/*}"
-	do
-		a=${a#*/}
-		b=${b#*/}
-	done
-	# Now chop off the trailing '/'s that were added in the beginning
-	a=${a%/}
-	b=${b%/}
-
-	# Turn each leading "*/" component into "../"
-	rel=$(echo $b | sed -e 's|[^/][^/]*|..|g')
-	echo "gitdir: $rel/$a" >"$sm_path/.git"
-
-	rel=$(echo $a | sed -e 's|[^/][^/]*|..|g')
-	(clear_local_git_env; cd "$sm_path" && GIT_WORK_TREE=. git config core.worktree "$rel/$b")
-}
-
 isnumber()
 {
 	n=$(($1 + 0)) 2>/dev/null && test "$n" = "$1"
@@ -282,6 +202,7 @@ isnumber()
 cmd_add()
 {
 	# parse $args after "submodule ... add".
+	reference_path=
 	while test $# -ne 0
 	do
 		case "$1" in
@@ -298,16 +219,24 @@ cmd_add()
 			;;
 		--reference)
 			case "$2" in '') usage ;; esac
-			reference="--reference=$2"
+			reference_path=$2
 			shift
 			;;
 		--reference=*)
-			reference="$1"
+			reference_path="${1#--reference=}"
 			;;
 		--name)
 			case "$2" in '') usage ;; esac
 			custom_name=$2
 			shift
+			;;
+		--depth)
+			case "$2" in '') usage ;; esac
+			depth="--depth=$2"
+			shift
+			;;
+		--depth=*)
+			depth=$1
 			;;
 		--)
 			shift
@@ -323,21 +252,34 @@ cmd_add()
 		shift
 	done
 
+	if test -n "$reference_path"
+	then
+		is_absolute_path "$reference_path" ||
+		reference_path="$wt_prefix$reference_path"
+
+		reference="--reference=$reference_path"
+	fi
+
 	repo=$1
 	sm_path=$2
 
 	if test -z "$sm_path"; then
-		sm_path=$(echo "$repo" |
+		sm_path=$(printf '%s\n' "$repo" |
 			sed -e 's|/$||' -e 's|:*/*\.git$||' -e 's|.*[/:]||g')
 	fi
 
-	if test -z "$repo" -o -z "$sm_path"; then
+	if test -z "$repo" || test -z "$sm_path"; then
 		usage
 	fi
+
+	is_absolute_path "$sm_path" || sm_path="$wt_prefix$sm_path"
 
 	# assure repo is absolute or relative to parent
 	case "$repo" in
 	./*|../*)
+		test -z "$wt_prefix" ||
+		die "$(gettext "Relative path can only be used from the toplevel of the working tree")"
+
 		# dereference source url relative to parent's url
 		realrepo=$(resolve_relative_url "$repo") || exit
 		;;
@@ -356,7 +298,7 @@ cmd_add()
 		sed -e '
 			s|//*|/|g
 			s|^\(\./\)*||
-			s|/\./|/|g
+			s|/\(\./\)*|/|g
 			:start
 			s|\([^/]*\)/\.\./||
 			tstart
@@ -383,7 +325,7 @@ Use -f if you really want to add it." >&2
 	# perhaps the path exists and is already a git repo, else clone it
 	if test -e "$sm_path"
 	then
-		if test -d "$sm_path"/.git -o -f "$sm_path"/.git
+		if test -d "$sm_path"/.git || test -f "$sm_path"/.git
 		then
 			eval_gettextln "Adding existing repo at '\$sm_path' to the index"
 		else
@@ -405,7 +347,7 @@ Use -f if you really want to add it." >&2
 				echo "$(eval_gettext "Reactivating local git directory for submodule '\$sm_name'.")"
 			fi
 		fi
-		module_clone "$sm_path" "$sm_name" "$realrepo" "$reference" || exit
+		git submodule--helper clone ${GIT_QUIET:+--quiet} --prefix "$wt_prefix" --path "$sm_path" --name "$sm_name" --url "$realrepo" "$reference" "$depth" || exit
 		(
 			clear_local_git_env
 			cd "$sm_path" &&
@@ -465,27 +407,34 @@ cmd_foreach()
 	# command in the subshell (and a recursive call to this function)
 	exec 3<&0
 
-	module_list |
+	git submodule--helper list --prefix "$wt_prefix"|
 	while read mode sha1 stage sm_path
 	do
 		die_if_unmatched "$mode"
 		if test -e "$sm_path"/.git
 		then
-			say "$(eval_gettext "Entering '\$prefix\$sm_path'")"
-			name=$(module_name "$sm_path")
+			displaypath=$(relative_path "$sm_path")
+			say "$(eval_gettext "Entering '\$prefix\$displaypath'")"
+			name=$(git submodule--helper name "$sm_path")
 			(
 				prefix="$prefix$sm_path/"
 				clear_local_git_env
-				# we make $path available to scripts ...
-				path=$sm_path
 				cd "$sm_path" &&
-				eval "$@" &&
+				sm_path=$(relative_path "$sm_path") &&
+				# we make $path available to scripts ...
+				path=$sm_path &&
+				if test $# -eq 1
+				then
+					eval "$1"
+				else
+					"$@"
+				fi &&
 				if test -n "$recursive"
 				then
 					cmd_foreach "--recursive" "$@"
 				fi
 			) <&3 3<&- ||
-			die "$(eval_gettext "Stopping at '\$sm_path'; script returned non-zero status.")"
+			die "$(eval_gettext "Stopping at '\$prefix\$displaypath'; script returned non-zero status.")"
 		fi
 	done
 }
@@ -518,18 +467,20 @@ cmd_init()
 		shift
 	done
 
-	module_list "$@" |
+	git submodule--helper list --prefix "$wt_prefix" "$@" |
 	while read mode sha1 stage sm_path
 	do
 		die_if_unmatched "$mode"
-		name=$(module_name "$sm_path") || exit
+		name=$(git submodule--helper name "$sm_path") || exit
+
+		displaypath=$(relative_path "$sm_path")
 
 		# Copy url setting when it is not set yet
 		if test -z "$(git config "submodule.$name.url")"
 		then
 			url=$(git config -f .gitmodules submodule."$name".url)
 			test -z "$url" &&
-			die "$(eval_gettext "No url found for submodule path '\$sm_path' in .gitmodules")"
+			die "$(eval_gettext "No url found for submodule path '\$displaypath' in .gitmodules")"
 
 			# Possibly a url relative to parent
 			case "$url" in
@@ -538,17 +489,27 @@ cmd_init()
 				;;
 			esac
 			git config submodule."$name".url "$url" ||
-			die "$(eval_gettext "Failed to register url for submodule path '\$sm_path'")"
+			die "$(eval_gettext "Failed to register url for submodule path '\$displaypath'")"
 
-			say "$(eval_gettext "Submodule '\$name' (\$url) registered for path '\$sm_path'")"
+			say "$(eval_gettext "Submodule '\$name' (\$url) registered for path '\$displaypath'")"
 		fi
 
 		# Copy "update" setting when it is not set yet
-		upd="$(git config -f .gitmodules submodule."$name".update)"
-		test -z "$upd" ||
-		test -n "$(git config submodule."$name".update)" ||
-		git config submodule."$name".update "$upd" ||
-		die "$(eval_gettext "Failed to register update mode for submodule path '\$sm_path'")"
+		if upd="$(git config -f .gitmodules submodule."$name".update)" &&
+		   test -n "$upd" &&
+		   test -z "$(git config submodule."$name".update)"
+		then
+			case "$upd" in
+			checkout | rebase | merge | none)
+				;; # known modes of updating
+			*)
+				echo >&2 "warning: unknown update mode '$upd' suggested for submodule '$name'"
+				upd=none
+				;;
+			esac
+			git config submodule."$name".update "$upd" ||
+			die "$(eval_gettext "Failed to register update mode for submodule path '\$displaypath'")"
+		fi
 	done
 }
 
@@ -588,11 +549,13 @@ cmd_deinit()
 		die "$(eval_gettext "Use '.' if you really want to deinitialize all submodules")"
 	fi
 
-	module_list "$@" |
+	git submodule--helper list --prefix "$wt_prefix" "$@" |
 	while read mode sha1 stage sm_path
 	do
 		die_if_unmatched "$mode"
-		name=$(module_name "$sm_path") || exit
+		name=$(git submodule--helper name "$sm_path") || exit
+
+		displaypath=$(relative_path "$sm_path")
 
 		# Remove the submodule work tree (unless the user already did it)
 		if test -d "$sm_path"
@@ -600,21 +563,21 @@ cmd_deinit()
 			# Protect submodules containing a .git directory
 			if test -d "$sm_path/.git"
 			then
-				echo >&2 "$(eval_gettext "Submodule work tree '\$sm_path' contains a .git directory")"
+				echo >&2 "$(eval_gettext "Submodule work tree '\$displaypath' contains a .git directory")"
 				die "$(eval_gettext "(use 'rm -rf' if you really want to remove it including all of its history)")"
 			fi
 
 			if test -z "$force"
 			then
 				git rm -qn "$sm_path" ||
-				die "$(eval_gettext "Submodule work tree '\$sm_path' contains local modifications; use '-f' to discard them")"
+				die "$(eval_gettext "Submodule work tree '\$displaypath' contains local modifications; use '-f' to discard them")"
 			fi
 			rm -rf "$sm_path" &&
-			say "$(eval_gettext "Cleared directory '\$sm_path'")" ||
-			say "$(eval_gettext "Could not remove submodule work tree '\$sm_path'")"
+			say "$(eval_gettext "Cleared directory '\$displaypath'")" ||
+			say "$(eval_gettext "Could not remove submodule work tree '\$displaypath'")"
 		fi
 
-		mkdir "$sm_path" || say "$(eval_gettext "Could not create empty submodule directory '\$sm_path'")"
+		mkdir "$sm_path" || say "$(eval_gettext "Could not create empty submodule directory '\$displaypath'")"
 
 		# Remove the .git/config entries (unless the user already did it)
 		if test -n "$(git config --get-regexp submodule."$name\.")"
@@ -623,10 +586,28 @@ cmd_deinit()
 			# the user later decides to init this submodule again
 			url=$(git config submodule."$name".url)
 			git config --remove-section submodule."$name" 2>/dev/null &&
-			say "$(eval_gettext "Submodule '\$name' (\$url) unregistered for path '\$sm_path'")"
+			say "$(eval_gettext "Submodule '\$name' (\$url) unregistered for path '\$displaypath'")"
 		fi
 	done
 }
+
+is_tip_reachable () (
+	clear_local_git_env
+	cd "$1" &&
+	rev=$(git rev-list -n 1 "$2" --not --all 2>/dev/null) &&
+	test -z "$rev"
+)
+
+fetch_in_submodule () (
+	clear_local_git_env
+	cd "$1" &&
+	case "$2" in
+	'')
+		git fetch ;;
+	*)
+		git fetch $(get_default_remote) "$2" ;;
+	esac
+)
 
 #
 # Update each submodule path to correct revision, using clone and checkout as needed
@@ -636,7 +617,6 @@ cmd_deinit()
 cmd_update()
 {
 	# parse $args after "submodule ... update".
-	orig_flags=
 	while test $# -ne 0
 	do
 		case "$1" in
@@ -661,7 +641,6 @@ cmd_update()
 		--reference)
 			case "$2" in '') usage ;; esac
 			reference="--reference=$2"
-			orig_flags="$orig_flags $(git rev-parse --sq-quote "$1")"
 			shift
 			;;
 		--reference=*)
@@ -676,6 +655,14 @@ cmd_update()
 		--checkout)
 			update="checkout"
 			;;
+		--depth)
+			case "$2" in '') usage ;; esac
+			depth="--depth=$2"
+			shift
+			;;
+		--depth=*)
+			depth=$1
+			;;
 		--)
 			shift
 			break
@@ -687,7 +674,6 @@ cmd_update()
 			break
 			;;
 		esac
-		orig_flags="$orig_flags $(git rev-parse --sq-quote "$1")"
 		shift
 	done
 
@@ -697,7 +683,7 @@ cmd_update()
 	fi
 
 	cloned_modules=
-	module_list "$@" | {
+	git submodule--helper list --prefix "$wt_prefix" "$@" | {
 	err=
 	while read mode sha1 stage sm_path
 	do
@@ -707,7 +693,7 @@ cmd_update()
 			echo >&2 "Skipping unmerged submodule $prefix$sm_path"
 			continue
 		fi
-		name=$(module_name "$sm_path") || exit
+		name=$(git submodule--helper name "$sm_path") || exit
 		url=$(git config submodule."$name".url)
 		branch=$(get_submodule_config "$name" branch master)
 		if ! test -z "$update"
@@ -715,11 +701,17 @@ cmd_update()
 			update_module=$update
 		else
 			update_module=$(git config submodule."$name".update)
+			if test -z "$update_module"
+			then
+				update_module="checkout"
+			fi
 		fi
+
+		displaypath=$(relative_path "$prefix$sm_path")
 
 		if test "$update_module" = "none"
 		then
-			echo "Skipping submodule '$prefix$sm_path'"
+			echo "Skipping submodule '$displaypath'"
 			continue
 		fi
 
@@ -728,20 +720,20 @@ cmd_update()
 			# Only mention uninitialized submodules when its
 			# path have been specified
 			test "$#" != "0" &&
-			say "$(eval_gettext "Submodule path '\$prefix\$sm_path' not initialized
+			say "$(eval_gettext "Submodule path '\$displaypath' not initialized
 Maybe you want to use 'update --init'?")"
 			continue
 		fi
 
-		if ! test -d "$sm_path"/.git -o -f "$sm_path"/.git
+		if ! test -d "$sm_path"/.git && ! test -f "$sm_path"/.git
 		then
-			module_clone "$sm_path" "$name" "$url" "$reference" || exit
+			git submodule--helper clone ${GIT_QUIET:+--quiet} --prefix "$prefix" --path "$sm_path" --name "$name" --url "$url" "$reference" "$depth" || exit
 			cloned_modules="$cloned_modules;$name"
 			subsha1=
 		else
 			subsha1=$(clear_local_git_env; cd "$sm_path" &&
 				git rev-parse --verify HEAD) ||
-			die "$(eval_gettext "Unable to find current revision in submodule path '\$prefix\$sm_path'")"
+			die "$(eval_gettext "Unable to find current revision in submodule path '\$displaypath'")"
 		fi
 
 		if test -n "$remote"
@@ -758,11 +750,11 @@ Maybe you want to use 'update --init'?")"
 			die "$(eval_gettext "Unable to find current ${remote_name}/${branch} revision in submodule path '\$sm_path'")"
 		fi
 
-		if test "$subsha1" != "$sha1" -o -n "$force"
+		if test "$subsha1" != "$sha1" || test -n "$force"
 		then
 			subforce=$force
 			# If we don't already have a -f flag and the submodule has never been checked out
-			if test -z "$subsha1" -a -z "$force"
+			if test -z "$subsha1" && test -z "$force"
 			then
 				subforce="-f"
 			fi
@@ -771,38 +763,51 @@ Maybe you want to use 'update --init'?")"
 			then
 				# Run fetch only if $sha1 isn't present or it
 				# is not reachable from a ref.
-				(clear_local_git_env; cd "$sm_path" &&
-					( (rev=$(git rev-list -n 1 $sha1 --not --all 2>/dev/null) &&
-					 test -z "$rev") || git-fetch)) ||
-				die "$(eval_gettext "Unable to fetch in submodule path '\$prefix\$sm_path'")"
+				is_tip_reachable "$sm_path" "$sha1" ||
+				fetch_in_submodule "$sm_path" ||
+				die "$(eval_gettext "Unable to fetch in submodule path '\$displaypath'")"
+
+				# Now we tried the usual fetch, but $sha1 may
+				# not be reachable from any of the refs
+				is_tip_reachable "$sm_path" "$sha1" ||
+				fetch_in_submodule "$sm_path" "$sha1" ||
+				die "$(eval_gettext "Fetched in submodule path '\$displaypath', but it did not contain $sha1. Direct fetching of that commit failed.")"
 			fi
 
 			# Is this something we just cloned?
 			case ";$cloned_modules;" in
 			*";$name;"*)
 				# then there is no local change to integrate
-				update_module= ;;
+				update_module=checkout ;;
 			esac
 
 			must_die_on_failure=
 			case "$update_module" in
+			checkout)
+				command="git checkout $subforce -q"
+				die_msg="$(eval_gettext "Unable to checkout '\$sha1' in submodule path '\$displaypath'")"
+				say_msg="$(eval_gettext "Submodule path '\$displaypath': checked out '\$sha1'")"
+				;;
 			rebase)
 				command="git rebase"
-				die_msg="$(eval_gettext "Unable to rebase '\$sha1' in submodule path '\$prefix\$sm_path'")"
-				say_msg="$(eval_gettext "Submodule path '\$prefix\$sm_path': rebased into '\$sha1'")"
+				die_msg="$(eval_gettext "Unable to rebase '\$sha1' in submodule path '\$displaypath'")"
+				say_msg="$(eval_gettext "Submodule path '\$displaypath': rebased into '\$sha1'")"
 				must_die_on_failure=yes
 				;;
 			merge)
 				command="git merge"
-				die_msg="$(eval_gettext "Unable to merge '\$sha1' in submodule path '\$prefix\$sm_path'")"
-				say_msg="$(eval_gettext "Submodule path '\$prefix\$sm_path': merged in '\$sha1'")"
+				die_msg="$(eval_gettext "Unable to merge '\$sha1' in submodule path '\$displaypath'")"
+				say_msg="$(eval_gettext "Submodule path '\$displaypath': merged in '\$sha1'")"
+				must_die_on_failure=yes
+				;;
+			!*)
+				command="${update_module#!}"
+				die_msg="$(eval_gettext "Execution of '\$command \$sha1' failed in submodule path '\$prefix\$sm_path'")"
+				say_msg="$(eval_gettext "Submodule path '\$prefix\$sm_path': '\$command \$sha1'")"
 				must_die_on_failure=yes
 				;;
 			*)
-				command="git checkout $subforce -q"
-				die_msg="$(eval_gettext "Unable to checkout '\$sha1' in submodule path '\$prefix\$sm_path'")"
-				say_msg="$(eval_gettext "Submodule path '\$prefix\$sm_path': checked out '\$sha1'")"
-				;;
+				die "$(eval_gettext "Invalid update mode '$update_module' for submodule '$name'")"
 			esac
 
 			if (clear_local_git_env; cd "$sm_path" && $command "$sha1")
@@ -823,12 +828,12 @@ Maybe you want to use 'update --init'?")"
 				prefix="$prefix$sm_path/"
 				clear_local_git_env
 				cd "$sm_path" &&
-				eval cmd_update "$orig_flags"
+				eval cmd_update
 			)
 			res=$?
 			if test $res -gt 0
 			then
-				die_msg="$(eval_gettext "Failed to recurse into submodule path '\$prefix\$sm_path'")"
+				die_msg="$(eval_gettext "Failed to recurse into submodule path '\$displaypath'")"
 				if test $res -eq 1
 				then
 					err="${err};$die_msg"
@@ -924,7 +929,7 @@ cmd_summary() {
 	then
 		head=$rev
 		test $# = 0 || shift
-	elif test -z "$1" -o "$1" = "HEAD"
+	elif test -z "$1" || test "$1" = "HEAD"
 	then
 		# before the first commit: compare with an empty tree
 		head=$(git hash-object -w -t tree --stdin </dev/null)
@@ -942,16 +947,28 @@ cmd_summary() {
 	fi
 
 	cd_to_toplevel
+	eval "set $(git rev-parse --sq --prefix "$wt_prefix" -- "$@")"
 	# Get modified modules cared by user
 	modules=$(git $diff_cmd $cached --ignore-submodules=dirty --raw $head -- "$@" |
 		sane_egrep '^:([0-7]* )?160000' |
-		while read mod_src mod_dst sha1_src sha1_dst status name
+		while read mod_src mod_dst sha1_src sha1_dst status sm_path
 		do
 			# Always show modules deleted or type-changed (blob<->module)
-			test $status = D -o $status = T && echo "$name" && continue
+			if test "$status" = D || test "$status" = T
+			then
+				printf '%s\n' "$sm_path"
+				continue
+			fi
+			# Respect the ignore setting for --for-status.
+			if test -n "$for_status"
+			then
+				name=$(git submodule--helper name "$sm_path")
+				ignore_config=$(get_submodule_config "$name" ignore none)
+				test $status != A && test $ignore_config = all && continue
+			fi
 			# Also show added or modified modules which are checked out
-			GIT_DIR="$name/.git" git-rev-parse --git-dir >/dev/null 2>&1 &&
-			echo "$name"
+			GIT_DIR="$sm_path/.git" git-rev-parse --git-dir >/dev/null 2>&1 &&
+			printf '%s\n' "$sm_path"
 		done
 	)
 
@@ -991,21 +1008,23 @@ cmd_summary() {
 		! GIT_DIR="$name/.git" git-rev-parse -q --verify $sha1_dst^0 >/dev/null &&
 		missing_dst=t
 
+		display_name=$(relative_path "$name")
+
 		total_commits=
 		case "$missing_src,$missing_dst" in
 		t,)
-			errmsg="$(eval_gettext "  Warn: \$name doesn't contain commit \$sha1_src")"
+			errmsg="$(eval_gettext "  Warn: \$display_name doesn't contain commit \$sha1_src")"
 			;;
 		,t)
-			errmsg="$(eval_gettext "  Warn: \$name doesn't contain commit \$sha1_dst")"
+			errmsg="$(eval_gettext "  Warn: \$display_name doesn't contain commit \$sha1_dst")"
 			;;
 		t,t)
-			errmsg="$(eval_gettext "  Warn: \$name doesn't contain commits \$sha1_src and \$sha1_dst")"
+			errmsg="$(eval_gettext "  Warn: \$display_name doesn't contain commits \$sha1_src and \$sha1_dst")"
 			;;
 		*)
 			errmsg=
 			total_commits=$(
-			if test $mod_src = 160000 -a $mod_dst = 160000
+			if test $mod_src = 160000 && test $mod_dst = 160000
 			then
 				range="$sha1_src...$sha1_dst"
 			elif test $mod_src = 160000
@@ -1029,12 +1048,12 @@ cmd_summary() {
 			submodule="$(gettext "submodule")"
 			if test $mod_dst = 160000
 			then
-				echo "* $name $sha1_abbr_src($blob)->$sha1_abbr_dst($submodule)$total_commits:"
+				echo "* $display_name $sha1_abbr_src($blob)->$sha1_abbr_dst($submodule)$total_commits:"
 			else
-				echo "* $name $sha1_abbr_src($submodule)->$sha1_abbr_dst($blob)$total_commits:"
+				echo "* $display_name $sha1_abbr_src($submodule)->$sha1_abbr_dst($blob)$total_commits:"
 			fi
 		else
-			echo "* $name $sha1_abbr_src...$sha1_abbr_dst$total_commits:"
+			echo "* $display_name $sha1_abbr_src...$sha1_abbr_dst$total_commits:"
 		fi
 		if test -n "$errmsg"
 		then
@@ -1042,7 +1061,7 @@ cmd_summary() {
 			# i.e. deleted or changed to blob
 			test $mod_dst = 160000 && echo "$errmsg"
 		else
-			if test $mod_src = 160000 -a $mod_dst = 160000
+			if test $mod_src = 160000 && test $mod_dst = 160000
 			then
 				limit=
 				test $summary_limit -gt 0 && limit="-$summary_limit"
@@ -1060,18 +1079,7 @@ cmd_summary() {
 			echo
 		fi
 		echo
-	done |
-	if test -n "$for_status"; then
-		if [ -n "$files" ]; then
-			gettextln "Submodules changed but not updated:" | git stripspace -c
-		else
-			gettextln "Submodule changes to be committed:" | git stripspace -c
-		fi
-		printf "\n" | git stripspace -c
-		git stripspace -c
-	else
-		cat
-	fi
+	done
 }
 #
 # List all submodules, prefixed with:
@@ -1112,19 +1120,23 @@ cmd_status()
 		shift
 	done
 
-	module_list "$@" |
+	git submodule--helper list --prefix "$wt_prefix" "$@" |
 	while read mode sha1 stage sm_path
 	do
 		die_if_unmatched "$mode"
-		name=$(module_name "$sm_path") || exit
+		name=$(git submodule--helper name "$sm_path") || exit
 		url=$(git config submodule."$name".url)
-		displaypath="$prefix$sm_path"
+		displaypath=$(relative_path "$prefix$sm_path")
 		if test "$stage" = U
 		then
 			say "U$sha1 $displaypath"
 			continue
 		fi
-		if test -z "$url" || ! test -d "$sm_path"/.git -o -f "$sm_path"/.git
+		if test -z "$url" ||
+		{
+			! test -d "$sm_path"/.git &&
+			! test -f "$sm_path"/.git
+		}
 		then
 			say "-$sha1 $displaypath"
 			continue;
@@ -1185,11 +1197,11 @@ cmd_sync()
 		esac
 	done
 	cd_to_toplevel
-	module_list "$@" |
+	git submodule--helper list --prefix "$wt_prefix" "$@" |
 	while read mode sha1 stage sm_path
 	do
 		die_if_unmatched "$mode"
-		name=$(module_name "$sm_path")
+		name=$(git submodule--helper name "$sm_path")
 		url=$(git config -f .gitmodules --get submodule."$name".url)
 
 		# Possibly a url relative to parent
@@ -1197,7 +1209,7 @@ cmd_sync()
 		./*|../*)
 			# rewrite foo/bar as ../.. to find path from
 			# submodule work tree to superproject work tree
-			up_path="$(echo "$sm_path" | sed "s/[^/][^/]*/../g")" &&
+			up_path="$(printf '%s\n' "$sm_path" | sed "s/[^/][^/]*/../g")" &&
 			# guarantee a trailing /
 			up_path=${up_path%/}/ &&
 			# path from submodule work tree to submodule origin repo
@@ -1213,7 +1225,8 @@ cmd_sync()
 
 		if git config "submodule.$name.url" >/dev/null 2>/dev/null
 		then
-			say "$(eval_gettext "Synchronizing submodule url for '\$prefix\$sm_path'")"
+			displaypath=$(relative_path "$prefix$sm_path")
+			say "$(eval_gettext "Synchronizing submodule url for '\$displaypath'")"
 			git config submodule."$name".url "$super_config_url"
 
 			if test -e "$sm_path"/.git
@@ -1292,7 +1305,7 @@ then
 fi
 
 # "--cached" is accepted only by "status" and "summary"
-if test -n "$cached" && test "$command" != status -a "$command" != summary
+if test -n "$cached" && test "$command" != status && test "$command" != summary
 then
 	usage
 fi

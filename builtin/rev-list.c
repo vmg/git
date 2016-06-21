@@ -3,6 +3,8 @@
 #include "diff.h"
 #include "revision.h"
 #include "list-objects.h"
+#include "pack.h"
+#include "pack-bitmap.h"
 #include "builtin.h"
 #include "log-tree.h"
 #include "graph.h"
@@ -40,6 +42,7 @@ static const char rev_list_usage[] =
 "    --abbrev=<n> | --no-abbrev\n"
 "    --abbrev-commit\n"
 "    --left-right\n"
+"    --count\n"
 "  special purpose:\n"
 "    --bisect\n"
 "    --bisect-vars\n"
@@ -78,14 +81,14 @@ static void show_commit(struct commit *commit, void *data)
 	if (!revs->graph)
 		fputs(get_revision_mark(revs, commit), stdout);
 	if (revs->abbrev_commit && revs->abbrev)
-		fputs(find_unique_abbrev(commit->object.sha1, revs->abbrev),
+		fputs(find_unique_abbrev(commit->object.oid.hash, revs->abbrev),
 		      stdout);
 	else
-		fputs(sha1_to_hex(commit->object.sha1), stdout);
+		fputs(oid_to_hex(&commit->object.oid), stdout);
 	if (revs->print_parents) {
 		struct commit_list *parents = commit->parents;
 		while (parents) {
-			printf(" %s", sha1_to_hex(parents->item->object.sha1));
+			printf(" %s", oid_to_hex(&parents->item->object.oid));
 			parents = parents->next;
 		}
 	}
@@ -94,7 +97,7 @@ static void show_commit(struct commit *commit, void *data)
 
 		children = lookup_decoration(&revs->children, &commit->object);
 		while (children) {
-			printf(" %s", sha1_to_hex(children->item->object.sha1));
+			printf(" %s", oid_to_hex(&children->item->object.oid));
 			children = children->next;
 		}
 	}
@@ -104,13 +107,14 @@ static void show_commit(struct commit *commit, void *data)
 	else
 		putchar('\n');
 
-	if (revs->verbose_header && commit->buffer) {
+	if (revs->verbose_header && get_cached_commit_buffer(commit, NULL)) {
 		struct strbuf buf = STRBUF_INIT;
 		struct pretty_print_context ctx = {0};
 		ctx.abbrev = revs->abbrev;
 		ctx.date_mode = revs->date_mode;
 		ctx.date_mode_explicit = revs->date_mode_explicit;
 		ctx.fmt = revs->commit_format;
+		ctx.output_encoding = get_log_output_encoding();
 		pretty_print_commit(&ctx, commit, &buf);
 		if (revs->graph) {
 			if (buf.len) {
@@ -170,35 +174,30 @@ static void finish_commit(struct commit *commit, void *data)
 		free_commit_list(commit->parents);
 		commit->parents = NULL;
 	}
-	free(commit->buffer);
-	commit->buffer = NULL;
+	free_commit_buffer(commit);
 }
 
-static void finish_object(struct object *obj,
-			  const struct name_path *path, const char *name,
-			  void *cb_data)
+static void finish_object(struct object *obj, const char *name, void *cb_data)
 {
 	struct rev_list_info *info = cb_data;
-	if (obj->type == OBJ_BLOB && !has_sha1_file(obj->sha1))
-		die("missing blob object '%s'", sha1_to_hex(obj->sha1));
+	if (obj->type == OBJ_BLOB && !has_object_file(&obj->oid))
+		die("missing blob object '%s'", oid_to_hex(&obj->oid));
 	if (info->revs->verify_objects && !obj->parsed && obj->type != OBJ_COMMIT)
-		parse_object(obj->sha1);
+		parse_object(obj->oid.hash);
 }
 
-static void show_object(struct object *obj,
-			const struct name_path *path, const char *component,
-			void *cb_data)
+static void show_object(struct object *obj, const char *name, void *cb_data)
 {
 	struct rev_list_info *info = cb_data;
-	finish_object(obj, path, component, cb_data);
+	finish_object(obj, name, cb_data);
 	if (info->flags & REV_LIST_QUIET)
 		return;
-	show_object_with_name(stdout, obj, path, component);
+	show_object_with_name(stdout, obj, name);
 }
 
 static void show_edge(struct commit *commit)
 {
-	printf("-%s\n", sha1_to_hex(commit->object.sha1));
+	printf("-%s\n", oid_to_hex(&commit->object.oid));
 }
 
 static void print_var_str(const char *var, const char *val)
@@ -214,7 +213,7 @@ static void print_var_int(const char *var, int val)
 static int show_bisect_vars(struct rev_list_info *info, int reaches, int all)
 {
 	int cnt, flags = info->flags;
-	char hex[41] = "";
+	char hex[GIT_SHA1_HEXSZ + 1] = "";
 	struct commit_list *tried;
 	struct rev_info *revs = info->revs;
 
@@ -239,7 +238,7 @@ static int show_bisect_vars(struct rev_list_info *info, int reaches, int all)
 		cnt = reaches;
 
 	if (revs->commits)
-		strcpy(hex, sha1_to_hex(revs->commits->item->object.sha1));
+		sha1_to_hex_r(hex, revs->commits->item->object.oid.hash);
 
 	if (flags & BISECT_SHOW_ALL) {
 		traverse_commit_list(revs, show_commit, show_object, info);
@@ -256,6 +255,18 @@ static int show_bisect_vars(struct rev_list_info *info, int reaches, int all)
 	return 0;
 }
 
+static int show_object_fast(
+	const unsigned char *sha1,
+	enum object_type type,
+	int exclude,
+	uint32_t name_hash,
+	struct packed_git *found_pack,
+	off_t found_offset)
+{
+	fprintf(stdout, "%s\n", sha1_to_hex(sha1));
+	return 1;
+}
+
 int cmd_rev_list(int argc, const char **argv, const char *prefix)
 {
 	struct rev_info revs;
@@ -264,6 +275,7 @@ int cmd_rev_list(int argc, const char **argv, const char *prefix)
 	int bisect_list = 0;
 	int bisect_show_vars = 0;
 	int bisect_find_all = 0;
+	int use_bitmap_index = 0;
 
 	git_config(git_default_config, NULL);
 	init_revisions(&revs, prefix);
@@ -305,6 +317,14 @@ int cmd_rev_list(int argc, const char **argv, const char *prefix)
 			bisect_show_vars = 1;
 			continue;
 		}
+		if (!strcmp(arg, "--use-bitmap-index")) {
+			use_bitmap_index = 1;
+			continue;
+		}
+		if (!strcmp(arg, "--test-bitmap")) {
+			test_bitmap_walk(&revs);
+			return 0;
+		}
 		usage(rev_list_usage);
 
 	}
@@ -321,10 +341,13 @@ int cmd_rev_list(int argc, const char **argv, const char *prefix)
 		revs.commit_format = CMIT_FMT_RAW;
 
 	if ((!revs.commits &&
-	     (!(revs.tag_objects||revs.tree_objects||revs.blob_objects) &&
+	     (!(revs.tag_objects || revs.tree_objects || revs.blob_objects) &&
 	      !revs.pending.nr)) ||
 	    revs.diff)
 		usage(rev_list_usage);
+
+	if (revs.show_notes)
+		die(_("rev-list does not support display of notes"));
 
 	save_commit_buffer = (revs.verbose_header ||
 			      revs.grep_filter.pattern_list ||
@@ -332,10 +355,26 @@ int cmd_rev_list(int argc, const char **argv, const char *prefix)
 	if (bisect_list)
 		revs.limited = 1;
 
+	if (use_bitmap_index && !revs.prune) {
+		if (revs.count && !revs.left_right && !revs.cherry_mark) {
+			uint32_t commit_count;
+			if (!prepare_bitmap_walk(&revs)) {
+				count_bitmap_commit_list(&commit_count, NULL, NULL, NULL);
+				printf("%d\n", commit_count);
+				return 0;
+			}
+		} else if (revs.tag_objects && revs.tree_objects && revs.blob_objects) {
+			if (!prepare_bitmap_walk(&revs)) {
+				traverse_bitmap_commit_list(&show_object_fast);
+				return 0;
+			}
+		}
+	}
+
 	if (prepare_revision_walk(&revs))
 		die("revision walk setup failed");
 	if (revs.tree_objects)
-		mark_edges_uninteresting(revs.commits, &revs, show_edge);
+		mark_edges_uninteresting(&revs, show_edge);
 
 	if (bisect_list) {
 		int reaches = reaches, all = all;

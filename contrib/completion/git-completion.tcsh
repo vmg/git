@@ -1,5 +1,3 @@
-#!tcsh
-#
 # tcsh completion support for core Git.
 #
 # Copyright (C) 2012 Marc Khouzam <marc.khouzam@gmail.com>
@@ -43,7 +41,7 @@ if ( ! -e ${__git_tcsh_completion_original_script} ) then
 	exit
 endif
 
-cat << EOF > ${__git_tcsh_completion_script}
+cat << EOF >! ${__git_tcsh_completion_script}
 #!bash
 #
 # This script is GENERATED and will be overwritten automatically.

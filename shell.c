@@ -15,7 +15,7 @@ static int do_generic_cmd(const char *me, char *arg)
 	setup_path();
 	if (!arg || !(arg = sq_dequote(arg)))
 		die("bad argument");
-	if (prefixcmp(me, "git-"))
+	if (!starts_with(me, "git-"))
 		die("bad command");
 
 	my_argv[0] = me + 4;
@@ -46,11 +46,7 @@ static int is_valid_cmd_name(const char *cmd)
 
 static char *make_cmd(const char *prog)
 {
-	char *prefix = xmalloc((strlen(prog) + strlen(COMMAND_DIR) + 2));
-	strcpy(prefix, COMMAND_DIR);
-	strcat(prefix, "/");
-	strcat(prefix, prog);
-	return prefix;
+	return xstrfmt("%s/%s", COMMAND_DIR, prog);
 }
 
 static void cd_to_homedir(void)
@@ -92,7 +88,7 @@ static void run_shell(void)
 		int count;
 
 		fprintf(stderr, "git> ");
-		if (strbuf_getline(&line, stdin, '\n') == EOF) {
+		if (strbuf_getline_lf(&line, stdin) == EOF) {
 			fprintf(stderr, "\n");
 			strbuf_release(&line);
 			break;
@@ -147,7 +143,6 @@ int main(int argc, char **argv)
 	char *prog;
 	const char **user_argv;
 	struct commands *cmd;
-	int devnull_fd;
 	int count;
 
 	git_setup_gettext();
@@ -156,15 +151,10 @@ int main(int argc, char **argv)
 
 	/*
 	 * Always open file descriptors 0/1/2 to avoid clobbering files
-	 * in die().  It also avoids not messing up when the pipes are
-	 * dup'ed onto stdin/stdout/stderr in the child processes we spawn.
+	 * in die().  It also avoids messing up when the pipes are dup'ed
+	 * onto stdin/stdout/stderr in the child processes we spawn.
 	 */
-	devnull_fd = open("/dev/null", O_RDWR);
-	while (devnull_fd >= 0 && devnull_fd <= 2)
-		devnull_fd = dup(devnull_fd);
-	if (devnull_fd == -1)
-		die_errno("opening /dev/null failed");
-	close (devnull_fd);
+	sanitize_stdfds();
 
 	/*
 	 * Special hack to pretend to be a CVS server

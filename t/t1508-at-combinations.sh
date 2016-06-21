@@ -9,8 +9,11 @@ check() {
 		if test '$2' = 'commit'
 		then
 			git log -1 --format=%s '$1' >actual
-		else
+		elif test '$2' = 'ref'
+		then
 			git rev-parse --symbolic-full-name '$1' >actual
+		else
+			git cat-file -p '$1' >actual
 		fi &&
 		test_cmp expect actual
 	"
@@ -32,6 +35,12 @@ test_expect_success 'setup' '
 	git checkout -b upstream-branch &&
 	test_commit upstream-one &&
 	test_commit upstream-two &&
+	if test_have_prereq !MINGW
+	then
+		git checkout -b @/at-test
+	fi &&
+	git checkout -b @@/at-test &&
+	git checkout -b @at-test &&
 	git checkout -b old-branch &&
 	test_commit old-one &&
 	test_commit old-two &&
@@ -57,6 +66,10 @@ check "@{-1}@{u}" ref refs/heads/master
 check "@{-1}@{u}@{1}" commit master-one
 check "@" commit new-two
 check "@@{u}" ref refs/heads/upstream-branch
+check "@@/at-test" ref refs/heads/@@/at-test
+test_have_prereq MINGW ||
+check "@/at-test" ref refs/heads/@/at-test
+check "@at-test" ref refs/heads/@at-test
 nonsense "@{u}@{-1}"
 nonsense "@{0}@{0}"
 nonsense "@{1}@{u}"
@@ -75,5 +88,15 @@ test_expect_success 'switch to old-branch' '
 check HEAD ref refs/heads/old-branch
 check "HEAD@{1}" commit new-two
 check "@{1}" commit old-one
+
+test_expect_success 'create path with @' '
+	echo content >normal &&
+	echo content >fun@ny &&
+	git add normal fun@ny &&
+	git commit -m "funny path"
+'
+
+check "@:normal" blob content
+check "@:fun@ny" blob content
 
 test_done

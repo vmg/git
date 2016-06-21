@@ -32,23 +32,23 @@ create_test_files() {
 create_new_pack() {
     rm -rf .git &&
     git init &&
-    blob_1=`git hash-object -t blob -w file_1` &&
-    blob_2=`git hash-object -t blob -w file_2` &&
-    blob_3=`git hash-object -t blob -w file_3` &&
-    pack=`printf "$blob_1\n$blob_2\n$blob_3\n" |
-          git pack-objects $@ .git/objects/pack/pack` &&
+    blob_1=$(git hash-object -t blob -w file_1) &&
+    blob_2=$(git hash-object -t blob -w file_2) &&
+    blob_3=$(git hash-object -t blob -w file_3) &&
+    pack=$(printf "$blob_1\n$blob_2\n$blob_3\n" |
+          git pack-objects $@ .git/objects/pack/pack) &&
     pack=".git/objects/pack/pack-${pack}" &&
     git verify-pack -v ${pack}.pack
 }
 
 do_repack() {
-    pack=`printf "$blob_1\n$blob_2\n$blob_3\n" |
-          git pack-objects $@ .git/objects/pack/pack` &&
+    pack=$(printf "$blob_1\n$blob_2\n$blob_3\n" |
+          git pack-objects $@ .git/objects/pack/pack) &&
     pack=".git/objects/pack/pack-${pack}"
 }
 
 do_corrupt_object() {
-    ofs=`git show-index < ${pack}.idx | grep $1 | cut -f1 -d" "` &&
+    ofs=$(git show-index < ${pack}.idx | grep $1 | cut -f1 -d" ") &&
     ofs=$(($ofs + $2)) &&
     chmod +w ${pack}.pack &&
     dd of=${pack}.pack bs=1 conv=notrunc seek=$ofs &&
@@ -98,7 +98,7 @@ test_expect_success \
     'create_new_pack &&
      git prune-packed &&
      chmod +w ${pack}.pack &&
-     "$PERL_PATH" -i.bak -pe "s/ base /abcdef/" ${pack}.pack &&
+     perl -i.bak -pe "s/ base /abcdef/" ${pack}.pack &&
      test_must_fail git cat-file blob $blob_1 > /dev/null &&
      test_must_fail git cat-file blob $blob_2 > /dev/null &&
      test_must_fail git cat-file blob $blob_3 > /dev/null'
@@ -155,7 +155,7 @@ test_expect_success \
     'create_new_pack &&
      git prune-packed &&
      chmod +w ${pack}.pack &&
-     "$PERL_PATH" -i.bak -pe "s/ delta1 /abcdefgh/" ${pack}.pack &&
+     perl -i.bak -pe "s/ delta1 /abcdefgh/" ${pack}.pack &&
      git cat-file blob $blob_1 > /dev/null &&
      test_must_fail git cat-file blob $blob_2 > /dev/null &&
      test_must_fail git cat-file blob $blob_3 > /dev/null'

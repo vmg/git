@@ -9,10 +9,10 @@ if [ $# -eq 0 ]; then
 fi
 OPTS_SPEC="\
 git subtree add   --prefix=<prefix> <commit>
-git subtree add   --prefix=<prefix> <repository> <commit>
+git subtree add   --prefix=<prefix> <repository> <ref>
 git subtree merge --prefix=<prefix> <commit>
-git subtree pull  --prefix=<prefix> <repository> <refspec...>
-git subtree push  --prefix=<prefix> <repository> <refspec...>
+git subtree pull  --prefix=<prefix> <repository> <ref>
+git subtree push  --prefix=<prefix> <repository> <ref>
 git subtree split --prefix=<prefix> <commit...>
 --
 h,help        show the help
@@ -26,7 +26,7 @@ b,branch=     create a new branch from the split subtree
 ignore-joins  ignore prior --rejoin commits
 onto=         try connecting new tree to an existing one
 rejoin        merge the new branch back into HEAD
- options for 'add', 'merge', 'pull' and 'push'
+ options for 'add', 'merge', and 'pull'
 squash        merge subtree changes as a single commit
 "
 eval "$(echo "$OPTS_SPEC" | git rev-parse --parseopt -- "$@" || echo exit $?)"
@@ -46,18 +46,26 @@ ignore_joins=
 annotate=
 squash=
 message=
+prefix=
 
 debug()
 {
 	if [ -n "$debug" ]; then
-		echo "$@" >&2
+		printf "%s\n" "$*" >&2
 	fi
 }
 
 say()
 {
 	if [ -z "$quiet" ]; then
-		echo "$@" >&2
+		printf "%s\n" "$*" >&2
+	fi
+}
+
+progress()
+{
+	if [ -z "$quiet" ]; then
+		printf "%s\r" "$*" >&2
 	fi
 }
 
@@ -82,7 +90,7 @@ while [ $# -gt 0 ]; do
 		--annotate) annotate="$1"; shift ;;
 		--no-annotate) annotate= ;;
 		-b) branch="$1"; shift ;;
-		-P) prefix="$1"; shift ;;
+		-P) prefix="${1%/}"; shift ;;
 		-m) message="$1"; shift ;;
 		--no-prefix) prefix= ;;
 		--onto) onto="$1"; shift ;;
@@ -237,7 +245,10 @@ find_latest_squash()
 		case "$a" in
 			START) sq="$b" ;;
 			git-subtree-mainline:) main="$b" ;;
-			git-subtree-split:) sub="$b" ;;
+			git-subtree-split:)
+				sub="$(git rev-parse "$b^0")" ||
+				    die "could not rev-parse split hash $b from commit $sq"
+				;;
 			END)
 				if [ -n "$sub" ]; then
 					if [ -n "$main" ]; then
@@ -270,7 +281,10 @@ find_existing_splits()
 		case "$a" in
 			START) sq="$b" ;;
 			git-subtree-mainline:) main="$b" ;;
-			git-subtree-split:) sub="$b" ;;
+			git-subtree-split:)
+				sub="$(git rev-parse "$b^0")" ||
+				    die "could not rev-parse split hash $b from commit $sq"
+				;;
 			END)
 				debug "  Main is: '$main'"
 				if [ -z "$main" -a -n "$sub" ]; then
@@ -297,7 +311,7 @@ copy_commit()
 	# We're going to set some environment vars here, so
 	# do it in a subshell to get rid of them safely later
 	debug copy_commit "{$1}" "{$2}" "{$3}"
-	git log -1 --pretty=format:'%an%n%ae%n%ad%n%cn%n%ce%n%cd%n%B' "$1" |
+	git log -1 --pretty=format:'%an%n%ae%n%aD%n%cn%n%ce%n%cD%n%B' "$1" |
 	(
 		read GIT_AUTHOR_NAME
 		read GIT_AUTHOR_EMAIL
@@ -311,7 +325,7 @@ copy_commit()
 			GIT_COMMITTER_NAME \
 			GIT_COMMITTER_EMAIL \
 			GIT_COMMITTER_DATE
-		(echo -n "$annotate"; cat ) |
+		(printf "%s" "$annotate"; cat ) |
 		git commit-tree "$2" $3  # reads the rest of stdin
 	) || die "Can't copy commit $1"
 }
@@ -471,8 +485,16 @@ copy_or_skip()
 			p="$p -p $parent"
 		fi
 	done
-	
-	if [ -n "$identical" ]; then
+
+	copycommit=
+	if [ -n "$identical" ] && [ -n "$nonidentical" ]; then
+		extras=$(git rev-list --count $identical..$nonidentical)
+		if [ "$extras" -ne 0 ]; then
+			# we need to preserve history along the other branch
+			copycommit=1
+		fi
+	fi
+	if [ -n "$identical" ] && [ -z "$copycommit" ]; then
 		echo $identical
 	else
 		copy_commit $rev $tree "$p" || exit $?
@@ -487,6 +509,12 @@ ensure_clean()
 	if ! git diff-index --cached HEAD --exit-code --quiet 2>&1; then
 		die "Index has modifications.  Cannot add."
 	fi
+}
+
+ensure_valid_ref_format()
+{
+	git check-ref-format "refs/heads/$1" ||
+	    die "'$1' does not look like a ref"
 }
 
 cmd_add()
@@ -508,8 +536,7 @@ cmd_add()
 	    # specified directory.  Allowing a refspec might be
 	    # misleading because we won't do anything with any other
 	    # branches fetched via the refspec.
-	    git rev-parse -q --verify "$2^{commit}" >/dev/null ||
-	    die "'$2' does not refer to a commit"
+	    ensure_valid_ref_format "$2"
 
 	    "cmd_add_repository" "$@"
 	else
@@ -552,8 +579,9 @@ cmd_add_commit()
 		commit=$(add_squashed_msg "$rev" "$dir" |
 			 git commit-tree $tree $headp -p "$rev") || exit $?
 	else
+		revp=$(peel_committish "$rev") &&
 		commit=$(add_msg "$dir" "$headrev" "$rev" |
-			 git commit-tree $tree $headp -p "$rev") || exit $?
+			 git commit-tree $tree $headp -p "$revp") || exit $?
 	fi
 	git reset "$commit" || exit $?
 	
@@ -592,7 +620,7 @@ cmd_split()
 	eval "$grl" |
 	while read rev parents; do
 		revcount=$(($revcount + 1))
-		say -n "$revcount/$revmax ($createcount)"
+		progress "$revcount/$revmax ($createcount)"
 		debug "Processing commit: $rev"
 		exists=$(cache_get $rev)
 		if [ -n "$exists" ]; then
@@ -634,7 +662,7 @@ cmd_split()
 		debug "Merging split branch into HEAD..."
 		latest_old=$(cache_get latest_old)
 		git merge -s ours \
-			-m "$(rejoin_msg $dir $latest_old $latest_new)" \
+			-m "$(rejoin_msg "$dir" $latest_old $latest_new)" \
 			$latest_new >&2 || exit $?
 	fi
 	if [ -n "$branch" ]; then
@@ -699,7 +727,11 @@ cmd_merge()
 
 cmd_pull()
 {
+	if [ $# -ne 2 ]; then
+	    die "You must provide <repository> <ref>"
+	fi
 	ensure_clean
+	ensure_valid_ref_format "$2"
 	git fetch "$@" || exit $?
 	revs=FETCH_HEAD
 	set -- $revs
@@ -709,14 +741,15 @@ cmd_pull()
 cmd_push()
 {
 	if [ $# -ne 2 ]; then
-	    die "You must provide <repository> <refspec>"
+	    die "You must provide <repository> <ref>"
 	fi
+	ensure_valid_ref_format "$2"
 	if [ -e "$dir" ]; then
 	    repository=$1
 	    refspec=$2
 	    echo "git push using: " $repository $refspec
 	    localrev=$(git subtree split --prefix="$prefix") || die
-	    git push $repository $localrev:refs/heads/$refspec
+	    git push "$repository" $localrev:refs/heads/$refspec
 	else
 	    die "'$dir' must already exist. Try 'git subtree add'."
 	fi

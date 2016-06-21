@@ -69,7 +69,7 @@ run_completion ()
 	local -a COMPREPLY _words
 	local _cword
 	_words=( $1 )
-	test "${1: -1}" == ' ' && _words+=('')
+	test "${1: -1}" = ' ' && _words[${#_words[@]}+1]=''
 	(( _cword = ${#_words[@]} - 1 ))
 	__git_wrap__git_main && print_comp
 }
@@ -121,6 +121,149 @@ test_gitcomp_nl ()
 }
 
 invalid_variable_name='${foo.bar}'
+
+actual="$TRASH_DIRECTORY/actual"
+
+test_expect_success 'setup for __gitdir tests' '
+	mkdir -p subdir/subsubdir &&
+	git init otherrepo
+'
+
+test_expect_success '__gitdir - from command line (through $__git_dir)' '
+	echo "$TRASH_DIRECTORY/otherrepo/.git" >expected &&
+	(
+		__git_dir="$TRASH_DIRECTORY/otherrepo/.git" &&
+		__gitdir >"$actual"
+	) &&
+	test_cmp expected "$actual"
+'
+
+test_expect_success '__gitdir - repo as argument' '
+	echo "otherrepo/.git" >expected &&
+	__gitdir "otherrepo" >"$actual" &&
+	test_cmp expected "$actual"
+'
+
+test_expect_success '__gitdir - remote as argument' '
+	echo "remote" >expected &&
+	__gitdir "remote" >"$actual" &&
+	test_cmp expected "$actual"
+'
+
+test_expect_success '__gitdir - .git directory in cwd' '
+	echo ".git" >expected &&
+	__gitdir >"$actual" &&
+	test_cmp expected "$actual"
+'
+
+test_expect_success '__gitdir - .git directory in parent' '
+	echo "$(pwd -P)/.git" >expected &&
+	(
+		cd subdir/subsubdir &&
+		__gitdir >"$actual"
+	) &&
+	test_cmp expected "$actual"
+'
+
+test_expect_success '__gitdir - cwd is a .git directory' '
+	echo "." >expected &&
+	(
+		cd .git &&
+		__gitdir >"$actual"
+	) &&
+	test_cmp expected "$actual"
+'
+
+test_expect_success '__gitdir - parent is a .git directory' '
+	echo "$(pwd -P)/.git" >expected &&
+	(
+		cd .git/refs/heads &&
+		__gitdir >"$actual"
+	) &&
+	test_cmp expected "$actual"
+'
+
+test_expect_success '__gitdir - $GIT_DIR set while .git directory in cwd' '
+	echo "$TRASH_DIRECTORY/otherrepo/.git" >expected &&
+	(
+		GIT_DIR="$TRASH_DIRECTORY/otherrepo/.git" &&
+		export GIT_DIR &&
+		__gitdir >"$actual"
+	) &&
+	test_cmp expected "$actual"
+'
+
+test_expect_success '__gitdir - $GIT_DIR set while .git directory in parent' '
+	echo "$TRASH_DIRECTORY/otherrepo/.git" >expected &&
+	(
+		GIT_DIR="$TRASH_DIRECTORY/otherrepo/.git" &&
+		export GIT_DIR &&
+		cd subdir &&
+		__gitdir >"$actual"
+	) &&
+	test_cmp expected "$actual"
+'
+
+test_expect_success '__gitdir - non-existing $GIT_DIR' '
+	(
+		GIT_DIR="$TRASH_DIRECTORY/non-existing" &&
+		export GIT_DIR &&
+		test_must_fail __gitdir
+	)
+'
+
+function pwd_P_W () {
+	if test_have_prereq MINGW
+	then
+		pwd -W
+	else
+		pwd -P
+	fi
+}
+
+test_expect_success '__gitdir - gitfile in cwd' '
+	echo "$(pwd_P_W)/otherrepo/.git" >expected &&
+	echo "gitdir: $(pwd_P_W)/otherrepo/.git" >subdir/.git &&
+	test_when_finished "rm -f subdir/.git" &&
+	(
+		cd subdir &&
+		__gitdir >"$actual"
+	) &&
+	test_cmp expected "$actual"
+'
+
+test_expect_success '__gitdir - gitfile in parent' '
+	echo "$(pwd_P_W)/otherrepo/.git" >expected &&
+	echo "gitdir: $(pwd_P_W)/otherrepo/.git" >subdir/.git &&
+	test_when_finished "rm -f subdir/.git" &&
+	(
+		cd subdir/subsubdir &&
+		__gitdir >"$actual"
+	) &&
+	test_cmp expected "$actual"
+'
+
+test_expect_success SYMLINKS '__gitdir - resulting path avoids symlinks' '
+	echo "$(pwd -P)/otherrepo/.git" >expected &&
+	mkdir otherrepo/dir &&
+	test_when_finished "rm -rf otherrepo/dir" &&
+	ln -s otherrepo/dir link &&
+	test_when_finished "rm -f link" &&
+	(
+		cd link &&
+		__gitdir >"$actual"
+	) &&
+	test_cmp expected "$actual"
+'
+
+test_expect_success '__gitdir - not a git repository' '
+	(
+		cd subdir/subsubdir &&
+		GIT_CEILING_DIRECTORIES="$TRASH_DIRECTORY" &&
+		export GIT_CEILING_DIRECTORIES &&
+		test_must_fail __gitdir
+	)
+'
 
 test_expect_success '__gitcomp - trailing space - options' '
 	test_gitcomp "--re" "--dry-run --reuse-message= --reedit-message=
@@ -208,6 +351,59 @@ test_expect_success '__gitcomp_nl - doesnt fail because of invalid variable name
 	__gitcomp_nl "$invalid_variable_name"
 '
 
+test_expect_success '__git_remotes - list remotes from $GIT_DIR/remotes and from config file' '
+	cat >expect <<-EOF &&
+	remote_from_file_1
+	remote_from_file_2
+	remote_in_config_1
+	remote_in_config_2
+	EOF
+	test_when_finished "rm -rf .git/remotes" &&
+	mkdir -p .git/remotes &&
+	>.git/remotes/remote_from_file_1 &&
+	>.git/remotes/remote_from_file_2 &&
+	test_when_finished "git remote remove remote_in_config_1" &&
+	git remote add remote_in_config_1 git://remote_1 &&
+	test_when_finished "git remote remove remote_in_config_2" &&
+	git remote add remote_in_config_2 git://remote_2 &&
+	__git_remotes >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success '__git_get_config_variables' '
+	cat >expect <<-EOF &&
+	name-1
+	name-2
+	EOF
+	test_config interesting.name-1 good &&
+	test_config interesting.name-2 good &&
+	test_config subsection.interesting.name-3 bad &&
+	__git_get_config_variables interesting >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success '__git_pretty_aliases' '
+	cat >expect <<-EOF &&
+	author
+	hash
+	EOF
+	test_config pretty.author "%an %ae" &&
+	test_config pretty.hash %H &&
+	__git_pretty_aliases >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success '__git_aliases' '
+	cat >expect <<-EOF &&
+	ci
+	co
+	EOF
+	test_config alias.ci commit &&
+	test_config alias.co checkout &&
+	__git_aliases >actual &&
+	test_cmp expect actual
+'
+
 test_expect_success 'basic' '
 	run_completion "git " &&
 	# built-in
@@ -231,6 +427,7 @@ test_expect_success 'double dash "git" itself' '
 	--exec-path Z
 	--exec-path=
 	--html-path Z
+	--man-path Z
 	--info-path Z
 	--work-tree=
 	--namespace=
@@ -405,7 +602,7 @@ test_expect_success 'complete files' '
 	test_completion "git commit " "modified" &&
 
 	: TODO .gitignore should not be here &&
-	test_completion "git ls-files " <<-\EOF
+	test_completion "git ls-files " <<-\EOF &&
 	.gitignore
 	dir
 	modified
@@ -413,6 +610,33 @@ test_expect_success 'complete files' '
 
 	touch momified &&
 	test_completion "git add mom" "momified"
+'
+
+test_expect_success "completion uses <cmd> completion for alias: !sh -c 'git <cmd> ...'" '
+	test_config alias.co "!sh -c '"'"'git checkout ...'"'"'" &&
+	test_completion "git co m" <<-\EOF
+	master Z
+	mybranch Z
+	mytag Z
+	EOF
+'
+
+test_expect_success 'completion uses <cmd> completion for alias: !f () { VAR=val git <cmd> ... }' '
+	test_config alias.co "!f () { VAR=val git checkout ... ; } f" &&
+	test_completion "git co m" <<-\EOF
+	master Z
+	mybranch Z
+	mytag Z
+	EOF
+'
+
+test_expect_success 'completion used <cmd> completion for alias: !f() { : git <cmd> ; ... }' '
+	test_config alias.co "!f() { : git checkout ; if ... } f" &&
+	test_completion "git co m" <<-\EOF
+	master Z
+	mybranch Z
+	mytag Z
+	EOF
 '
 
 test_expect_failure 'complete with tilde expansion' '

@@ -9,6 +9,22 @@ Documented tests for git reset'
 
 . ./test-lib.sh
 
+commit_msg () {
+	# String "modify 2nd file (changed)" partly in German
+	# (translated with Google Translate),
+	# encoded in UTF-8, used as a commit log message below.
+	msg="modify 2nd file (ge\303\244ndert)\n"
+	if test -n "$1"
+	then
+		printf "$msg" | iconv -f utf-8 -t "$1"
+	else
+		printf "$msg"
+	fi
+}
+
+# Tested non-UTF-8 encoding
+test_encoding="ISO8859-1"
+
 test_expect_success 'creating initial files and commits' '
 	test_tick &&
 	echo "1st file" >first &&
@@ -28,7 +44,9 @@ test_expect_success 'creating initial files and commits' '
 
 	echo "1st line 2nd file" >secondfile &&
 	echo "2nd line 2nd file" >>secondfile &&
-	git commit -a -m "modify 2nd file" &&
+	# "git commit -m" would break MinGW, as Windows refuse to pass
+	# $test_encoding encoded parameter to git.
+	commit_msg $test_encoding | git -c "i18n.commitEncoding=$test_encoding" commit -a -F - &&
 	head5=$(git rev-parse --verify HEAD)
 '
 # git log --pretty=oneline # to see those SHA1 involved
@@ -43,6 +61,20 @@ check_changes () {
 		cat $FILE || return
 	done | test_cmp .cat_expect -
 }
+
+test_expect_success 'reset --hard message' '
+	hex=$(git log -1 --format="%h") &&
+	git reset --hard > .actual &&
+	echo HEAD is now at $hex $(commit_msg) > .expected &&
+	test_cmp .expected .actual
+'
+
+test_expect_success 'reset --hard message (ISO8859-1 logoutputencoding)' '
+	hex=$(git log -1 --format="%h") &&
+	git -c "i18n.logOutputEncoding=$test_encoding" reset --hard > .actual &&
+	echo HEAD is now at $hex $(commit_msg $test_encoding) > .expected &&
+	test_cmp .expected .actual
+'
 
 >.diff_expect
 >.cached_expect
@@ -192,7 +224,8 @@ test_expect_success \
 	'changing files and redo the last commit should succeed' '
 	echo "3rd line 2nd file" >>secondfile &&
 	git commit -a -C ORIG_HEAD &&
-	check_changes 3d3b7be011a58ca0c179ae45d94e6c83c0b0cd0d &&
+	head4=$(git rev-parse --verify HEAD) &&
+	check_changes $head4 &&
 	test "$(git rev-parse ORIG_HEAD)" = \
 			$head5
 '
@@ -211,7 +244,7 @@ test_expect_success \
 	git reset --hard HEAD~2 &&
 	check_changes ddaefe00f1da16864591c61fdc7adb5d7cd6b74e &&
 	test "$(git rev-parse ORIG_HEAD)" = \
-			3d3b7be011a58ca0c179ae45d94e6c83c0b0cd0d
+			$head4
 '
 
 >.diff_expect
@@ -303,7 +336,9 @@ test_expect_success 'redoing the last two commits should succeed' '
 
 	echo "1st line 2nd file" >secondfile &&
 	echo "2nd line 2nd file" >>secondfile &&
-	git commit -a -m "modify 2nd file" &&
+	# "git commit -m" would break MinGW, as Windows refuse to pass
+	# $test_encoding encoded parameter to git.
+	commit_msg $test_encoding | git -c "i18n.commitEncoding=$test_encoding" commit -a -F - &&
 	check_changes $head5
 '
 
@@ -326,10 +361,11 @@ test_expect_success '--hard reset to HEAD should clear a failed merge' '
 	git checkout branch2 &&
 	echo "3rd line in branch2" >>secondfile &&
 	git commit -a -m "change in branch2" &&
+	head3=$(git rev-parse --verify HEAD) &&
 
 	test_must_fail git pull . branch1 &&
 	git reset --hard &&
-	check_changes 77abb337073fb4369a7ad69ff6f5ec0e4d6b54bb
+	check_changes $head3
 '
 
 >.diff_expect
@@ -504,6 +540,32 @@ test_expect_success 'reset with paths accepts tree' '
 	git reset HEAD^^{tree} -- . &&
 	git diff --cached HEAD^ --exit-code &&
 	git diff HEAD --exit-code
+'
+
+test_expect_success 'reset -N keeps removed files as intent-to-add' '
+	echo new-file >new-file &&
+	git add new-file &&
+	git reset -N HEAD &&
+
+	tree=$(git write-tree) &&
+	git ls-tree $tree new-file >actual &&
+	>expect &&
+	test_cmp expect actual &&
+
+	git diff --name-only >actual &&
+	echo new-file >expect &&
+	test_cmp expect actual
+'
+
+test_expect_success 'reset --mixed sets up work tree' '
+	git init mixed_worktree &&
+	(
+		cd mixed_worktree &&
+		test_commit dummy
+	) &&
+	: >expect &&
+	git --git-dir=mixed_worktree/.git --work-tree=mixed_worktree reset >actual &&
+	test_cmp expect actual
 '
 
 test_done

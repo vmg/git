@@ -14,7 +14,7 @@ test_expect_success \
      git add -- foo bar baz 'space embedded' -q &&
      git commit -m 'add normal files'"
 
-if touch -- 'tab	embedded' 'newline
+if test_have_prereq !MINGW && touch -- 'tab	embedded' 'newline
 embedded' 2>/dev/null
 then
 	test_set_prereq FUNNYNAMES
@@ -38,37 +38,37 @@ test_expect_success \
 
 test_expect_success \
     'Test that git rm --cached foo succeeds if the index matches the file' \
-    'echo content > foo
-     git add foo
+    'echo content >foo &&
+     git add foo &&
      git rm --cached foo'
 
 test_expect_success \
     'Test that git rm --cached foo succeeds if the index matches the file' \
-    'echo content > foo
-     git add foo
-     git commit -m foo
-     echo "other content" > foo
+    'echo content >foo &&
+     git add foo &&
+     git commit -m foo &&
+     echo "other content" >foo &&
      git rm --cached foo'
 
 test_expect_success \
     'Test that git rm --cached foo fails if the index matches neither the file nor HEAD' '
-     echo content > foo
-     git add foo
-     git commit -m foo
-     echo "other content" > foo
-     git add foo
-     echo "yet another content" > foo
+     echo content >foo &&
+     git add foo &&
+     git commit -m foo --allow-empty &&
+     echo "other content" >foo &&
+     git add foo &&
+     echo "yet another content" >foo &&
      test_must_fail git rm --cached foo
 '
 
 test_expect_success \
     'Test that git rm --cached -f foo works in case where --cached only did not' \
-    'echo content > foo
-     git add foo
-     git commit -m foo
-     echo "other content" > foo
-     git add foo
-     echo "yet another content" > foo
+    'echo content >foo &&
+     git add foo &&
+     git commit -m foo --allow-empty &&
+     echo "other content" >foo &&
+     git add foo &&
+     echo "yet another content" >foo &&
      git rm --cached -f foo'
 
 test_expect_success \
@@ -115,7 +115,7 @@ test_expect_success '"rm" command printed' '
 	git add test-file &&
 	git commit -m "add file for rm test" &&
 	git rm test-file > rm-output &&
-	test `grep "^rm " rm-output | wc -l` = 1 &&
+	test $(grep "^rm " rm-output | wc -l) = 1 &&
 	rm -f test-file rm-output &&
 	git commit -m "remove file from rm test"
 '
@@ -125,7 +125,7 @@ test_expect_success '"rm" command suppressed with --quiet' '
 	git add test-file &&
 	git commit -m "add file for rm --quiet test" &&
 	git rm --quiet test-file > rm-output &&
-	test `wc -l < rm-output` = 0 &&
+	test $(wc -l < rm-output) = 0 &&
 	rm -f test-file rm-output &&
 	git commit -m "remove file from rm --quiet test"
 '
@@ -170,7 +170,7 @@ test_expect_success 'but with -f it should work.' '
 	git rm -f foo baz &&
 	test ! -f foo &&
 	test ! -f baz &&
-	test_must_fail git ls-files --error-unmatch foo
+	test_must_fail git ls-files --error-unmatch foo &&
 	test_must_fail git ls-files --error-unmatch baz
 '
 
@@ -183,7 +183,7 @@ test_expect_success 'refuse to remove cached empty file with modifications' '
 
 test_expect_success 'remove intent-to-add file without --force' '
 	echo content >intent-to-add &&
-	git add -N intent-to-add
+	git add -N intent-to-add &&
 	git rm --cached intent-to-add
 '
 
@@ -201,7 +201,7 @@ test_expect_success 'Recursive without -r fails' '
 '
 
 test_expect_success 'Recursive with -r but dirty' '
-	echo qfwfq >>frotz/nitfol
+	echo qfwfq >>frotz/nitfol &&
 	test_must_fail git rm -r frotz &&
 	test -d frotz &&
 	test -f frotz/nitfol
@@ -240,18 +240,15 @@ test_expect_success 'refresh index before checking if it is up-to-date' '
 
 test_expect_success 'choking "git rm" should not let it die with cruft' '
 	git reset -q --hard &&
+	test_when_finished "rm -f .git/index.lock && git reset -q --hard" &&
 	i=0 &&
 	while test $i -lt 12000
 	do
-	    echo "100644 $_z40 0	some-file-$i"
+	    echo "100644 1234567890123456789012345678901234567890 0	some-file-$i"
 	    i=$(( $i + 1 ))
 	done | git update-index --index-info &&
-	git rm -n "some-file-*" | :;
-	test -f .git/index.lock
-	status=$?
-	rm -f .git/index.lock
-	git reset -q --hard
-	test "$status" != 0
+	git rm -n "some-file-*" | : &&
+	test_path_is_missing .git/index.lock
 '
 
 test_expect_success 'rm removes subdirectories recursively' '
@@ -263,11 +260,21 @@ test_expect_success 'rm removes subdirectories recursively' '
 '
 
 cat >expect <<EOF
+M  .gitmodules
 D  submod
 EOF
 
 cat >expect.modified <<EOF
  M submod
+EOF
+
+cat >expect.cached <<EOF
+D  submod
+EOF
+
+cat >expect.both_deleted<<EOF
+D  .gitmodules
+D  submod
 EOF
 
 test_expect_success 'rm removes empty submodules from work tree' '
@@ -281,16 +288,20 @@ test_expect_success 'rm removes empty submodules from work tree' '
 	git rm submod &&
 	test ! -e submod &&
 	git status -s -uno --ignore-submodules=none > actual &&
-	test_cmp expect actual
+	test_cmp expect actual &&
+	test_must_fail git config -f .gitmodules submodule.sub.url &&
+	test_must_fail git config -f .gitmodules submodule.sub.path
 '
 
-test_expect_success 'rm removes removed submodule from index' '
+test_expect_success 'rm removes removed submodule from index and .gitmodules' '
 	git reset --hard &&
 	git submodule update &&
 	rm -rf submod &&
 	git rm submod &&
 	git status -s -uno --ignore-submodules=none > actual &&
-	test_cmp expect actual
+	test_cmp expect actual &&
+	test_must_fail git config -f .gitmodules submodule.sub.url &&
+	test_must_fail git config -f .gitmodules submodule.sub.path
 '
 
 test_expect_success 'rm removes work tree of unmodified submodules' '
@@ -299,7 +310,9 @@ test_expect_success 'rm removes work tree of unmodified submodules' '
 	git rm submod &&
 	test ! -d submod &&
 	git status -s -uno --ignore-submodules=none > actual &&
-	test_cmp expect actual
+	test_cmp expect actual &&
+	test_must_fail git config -f .gitmodules submodule.sub.url &&
+	test_must_fail git config -f .gitmodules submodule.sub.path
 '
 
 test_expect_success 'rm removes a submodule with a trailing /' '
@@ -333,6 +346,72 @@ test_expect_success 'rm of a populated submodule with different HEAD fails unles
 	git rm -f submod &&
 	test ! -d submod &&
 	git status -s -uno --ignore-submodules=none > actual &&
+	test_cmp expect actual &&
+	test_must_fail git config -f .gitmodules submodule.sub.url &&
+	test_must_fail git config -f .gitmodules submodule.sub.path
+'
+
+test_expect_success 'rm --cached leaves work tree of populated submodules and .gitmodules alone' '
+	git reset --hard &&
+	git submodule update &&
+	git rm --cached submod &&
+	test -d submod &&
+	test -f submod/.git &&
+	git status -s -uno >actual &&
+	test_cmp expect.cached actual &&
+	git config -f .gitmodules submodule.sub.url &&
+	git config -f .gitmodules submodule.sub.path
+'
+
+test_expect_success 'rm --dry-run does not touch the submodule or .gitmodules' '
+	git reset --hard &&
+	git submodule update &&
+	git rm -n submod &&
+	test -f submod/.git &&
+	git diff-index --exit-code HEAD
+'
+
+test_expect_success 'rm does not complain when no .gitmodules file is found' '
+	git reset --hard &&
+	git submodule update &&
+	git rm .gitmodules &&
+	git rm submod >actual 2>actual.err &&
+	! test -s actual.err &&
+	! test -d submod &&
+	! test -f submod/.git &&
+	git status -s -uno >actual &&
+	test_cmp expect.both_deleted actual
+'
+
+test_expect_success 'rm will error out on a modified .gitmodules file unless staged' '
+	git reset --hard &&
+	git submodule update &&
+	git config -f .gitmodules foo.bar true &&
+	test_must_fail git rm submod >actual 2>actual.err &&
+	test -s actual.err &&
+	test -d submod &&
+	test -f submod/.git &&
+	git diff-files --quiet -- submod &&
+	git add .gitmodules &&
+	git rm submod >actual 2>actual.err &&
+	! test -s actual.err &&
+	! test -d submod &&
+	! test -f submod/.git &&
+	git status -s -uno >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'rm issues a warning when section is not found in .gitmodules' '
+	git reset --hard &&
+	git submodule update &&
+	git config -f .gitmodules --remove-section submodule.sub &&
+	git add .gitmodules &&
+	echo "warning: Could not find section in .gitmodules where path=submod" >expect.err &&
+	git rm submod >actual 2>actual.err &&
+	test_i18ncmp expect.err actual.err &&
+	! test -d submod &&
+	! test -f submod/.git &&
+	git status -s -uno >actual &&
 	test_cmp expect actual
 '
 
@@ -427,7 +506,9 @@ test_expect_success 'rm of a conflicted populated submodule with different HEAD 
 	git rm -f submod &&
 	test ! -d submod &&
 	git status -s -uno --ignore-submodules=none > actual &&
-	test_cmp expect actual
+	test_cmp expect actual &&
+	test_must_fail git config -f .gitmodules submodule.sub.url &&
+	test_must_fail git config -f .gitmodules submodule.sub.path
 '
 
 test_expect_success 'rm of a conflicted populated submodule with modifications fails unless forced' '
@@ -446,7 +527,9 @@ test_expect_success 'rm of a conflicted populated submodule with modifications f
 	git rm -f submod &&
 	test ! -d submod &&
 	git status -s -uno --ignore-submodules=none > actual &&
-	test_cmp expect actual
+	test_cmp expect actual &&
+	test_must_fail git config -f .gitmodules submodule.sub.url &&
+	test_must_fail git config -f .gitmodules submodule.sub.path
 '
 
 test_expect_success 'rm of a conflicted populated submodule with untracked files fails unless forced' '
@@ -620,6 +703,21 @@ test_expect_success 'rm of a populated nested submodule with a nested .git direc
 	git status -s -uno --ignore-submodules=none > actual &&
 	! test -s actual &&
 	rm -rf submod
+'
+
+test_expect_success 'checking out a commit after submodule removal needs manual updates' '
+	git commit -m "submodule removal" submod &&
+	git checkout HEAD^ &&
+	git submodule update &&
+	git checkout -q HEAD^ 2>actual &&
+	git checkout -q master 2>actual &&
+	test_i18ngrep "^warning: unable to rmdir submod:" actual &&
+	git status -s submod >actual &&
+	echo "?? submod/" >expected &&
+	test_cmp expected actual &&
+	rm -rf submod &&
+	git status -s -uno --ignore-submodules=none > actual &&
+	! test -s actual
 '
 
 test_expect_success 'rm of d/f when d has become a non-directory' '

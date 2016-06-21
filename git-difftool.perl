@@ -39,35 +39,17 @@ USAGE
 
 sub find_worktree
 {
-	my ($repo) = @_;
-
 	# Git->repository->wc_path() does not honor changes to the working
 	# tree location made by $ENV{GIT_WORK_TREE} or the 'core.worktree'
 	# config variable.
-	my $worktree;
-	my $env_worktree = $ENV{GIT_WORK_TREE};
-	my $core_worktree = Git::config('core.worktree');
-
-	if (defined($env_worktree) and (length($env_worktree) > 0)) {
-		$worktree = $env_worktree;
-	} elsif (defined($core_worktree) and (length($core_worktree) > 0)) {
-		$worktree = $core_worktree;
-	} else {
-		$worktree = $repo->wc_path();
-	}
-
-	return $worktree;
+	return Git::command_oneline('rev-parse', '--show-toplevel');
 }
 
 sub print_tool_help
 {
-	my $cmd = 'TOOL_MODE=diff';
-	$cmd .= ' && . "$(git --exec-path)/git-mergetool--lib"';
-	$cmd .= ' && show_tool_help';
-
 	# See the comment at the bottom of file_diff() for the reason behind
 	# using system() followed by exit() instead of exec().
-	my $rc = system('sh', '-c', $cmd);
+	my $rc = system(qw(git mergetool --tool-help=diff));
 	exit($rc | ($rc >> 8));
 }
 
@@ -88,9 +70,7 @@ sub use_wt_file
 	my ($repo, $workdir, $file, $sha1) = @_;
 	my $null_sha1 = '0' x 40;
 
-	if (! -e "$workdir/$file") {
-		# If the file doesn't exist in the working tree, we cannot
-		# use it.
+	if (-l "$workdir/$file" || ! -e _) {
 		return (0, $null_sha1);
 	}
 
@@ -360,6 +340,7 @@ sub main
 		symlinks => $^O ne 'cygwin' &&
 				$^O ne 'MSWin32' && $^O ne 'msys',
 		tool_help => undef,
+		trust_exit_code => undef,
 	);
 	GetOptions('g|gui!' => \$opts{gui},
 		'd|dir-diff' => \$opts{dirdiff},
@@ -370,6 +351,8 @@ sub main
 		'no-symlinks' => sub { $opts{symlinks} = 0; },
 		't|tool:s' => \$opts{difftool_cmd},
 		'tool-help' => \$opts{tool_help},
+		'trust-exit-code' => \$opts{trust_exit_code},
+		'no-trust-exit-code' => sub { $opts{trust_exit_code} = 0; },
 		'x|extcmd:s' => \$opts{extcmd});
 
 	if (defined($opts{help})) {
@@ -401,6 +384,15 @@ sub main
 		}
 	}
 
+	if (!defined $opts{trust_exit_code}) {
+		$opts{trust_exit_code} = Git::config_bool('difftool.trustExitCode');
+	}
+	if ($opts{trust_exit_code}) {
+		$ENV{GIT_DIFFTOOL_TRUST_EXIT_CODE} = 'true';
+	} else {
+		$ENV{GIT_DIFFTOOL_TRUST_EXIT_CODE} = 'false';
+	}
+
 	# In directory diff mode, 'git-difftool--helper' is called once
 	# to compare the a/b directories.  In file diff mode, 'git diff'
 	# will invoke a separate instance of 'git-difftool--helper' for
@@ -418,7 +410,7 @@ sub dir_diff
 	my $rc;
 	my $error = 0;
 	my $repo = Git->repository();
-	my $workdir = find_worktree($repo);
+	my $workdir = find_worktree();
 	my ($a, $b, $tmpdir, @worktree) =
 		setup_dir_diff($repo, $workdir, $symlinks);
 

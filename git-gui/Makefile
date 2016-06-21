@@ -4,7 +4,7 @@ all::
 #
 # Define NO_MSGFMT if you do not have msgfmt from the GNU gettext
 # package and want to use our rough pure Tcl po->msg translator.
-# TCL_PATH must be vaild for this to work.
+# TCL_PATH must be valid for this to work.
 #
 
 GIT-VERSION-FILE: FORCE
@@ -177,7 +177,8 @@ git-gui: GIT-VERSION-FILE GIT-GUI-VARS
 	echo then >>$@+ && \
 	echo '	'echo \'git-gui version '$(GITGUI_VERSION)'\' >>$@+ && \
 	echo else >>$@+ && \
-	echo '	'exec \''$(libdir_SQ)/Git Gui.app/Contents/MacOS/$(subst \,,$(TKEXECUTABLE))'\' \
+	echo '	libdir="$${GIT_GUI_LIB_DIR:-$(libdir_SQ)}"' >>$@+ && \
+	echo '	'exec \"'$$libdir/Git Gui.app/Contents/MacOS/$(subst \,,$(TKEXECUTABLE))'\" \
 		'"$$0" "$$@"' >>$@+ && \
 	echo fi >>$@+ && \
 	chmod +x $@+ && \

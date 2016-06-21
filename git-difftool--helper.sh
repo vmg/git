@@ -40,7 +40,8 @@ launch_merge_tool () {
 	# the user with the real $MERGED name before launching $merge_tool.
 	if should_prompt
 	then
-		printf "\nViewing: '%s'\n" "$MERGED"
+		printf "\nViewing (%s/%s): '%s'\n" "$GIT_DIFF_PATH_COUNTER" \
+			"$GIT_DIFF_PATH_TOTAL" "$MERGED"
 		if use_ext_cmd
 		then
 			printf "Launch '%s' [Y/n]: " \
@@ -48,7 +49,8 @@ launch_merge_tool () {
 		else
 			printf "Launch '%s' [Y/n]: " "$merge_tool"
 		fi
-		if read ans && test "$ans" = n
+		read ans || return
+		if test "$ans" = n
 		then
 			return
 		fi
@@ -83,6 +85,14 @@ else
 	while test $# -gt 6
 	do
 		launch_merge_tool "$1" "$2" "$5"
+		status=$?
+		if test "$status" != 0 &&
+			test "$GIT_DIFFTOOL_TRUST_EXIT_CODE" = true
+		then
+			exit $status
+		fi
 		shift 7
 	done
 fi
+
+exit 0

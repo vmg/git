@@ -8,20 +8,20 @@ test_description='git pack-object
 '
 . ./test-lib.sh
 
-TRASH=`pwd`
+TRASH=$(pwd)
 
 test_expect_success \
     'setup' \
     'rm -f .git/index* &&
-     "$PERL_PATH" -e "print \"a\" x 4096;" > a &&
-     "$PERL_PATH" -e "print \"b\" x 4096;" > b &&
-     "$PERL_PATH" -e "print \"c\" x 4096;" > c &&
+     perl -e "print \"a\" x 4096;" > a &&
+     perl -e "print \"b\" x 4096;" > b &&
+     perl -e "print \"c\" x 4096;" > c &&
      test-genrandom "seed a" 2097152 > a_big &&
      test-genrandom "seed b" 2097152 > b_big &&
      git update-index --add a a_big b b_big c &&
      cat c >d && echo foo >>d && git update-index --add d &&
-     tree=`git write-tree` &&
-     commit=`git commit-tree $tree </dev/null` && {
+     tree=$(git write-tree) &&
+     commit=$(git commit-tree $tree </dev/null) && {
 	 echo $tree &&
 	 echo $commit &&
 	 git ls-tree $tree | sed -e "s/.* \\([0-9a-f]*\\)	.*/\\1/"
@@ -29,7 +29,7 @@ test_expect_success \
 	 git diff-tree --root -p $commit &&
 	 while read object
 	 do
-	    t=`git cat-file -t $object` &&
+	    t=$(git cat-file -t $object) &&
 	    git cat-file $t $object || return 1
 	 done <obj-list
      } >expect'
@@ -129,7 +129,7 @@ test_expect_success \
 cd "$TRASH"
 
 test_expect_success 'compare delta flavors' '
-	"$PERL_PATH" -e '\''
+	perl -e '\''
 		defined($_ = -s $_) or die for @ARGV;
 		exit 1 if $ARGV[0] <= $ARGV[1];
 	'\'' test-2-$packname_2.pack test-3-$packname_3.pack
@@ -147,11 +147,11 @@ test_expect_success \
 	 git diff-tree --root -p $commit &&
 	 while read object
 	 do
-	    t=`git cat-file -t $object` &&
+	    t=$(git cat-file -t $object) &&
 	    git cat-file $t $object || return 1
 	 done <obj-list
     } >current &&
-    test_cmp expect current'
+    cmp expect current'
 
 test_expect_success \
     'use packed deltified (REF_DELTA) objects' \
@@ -162,11 +162,11 @@ test_expect_success \
 	 git diff-tree --root -p $commit &&
 	 while read object
 	 do
-	    t=`git cat-file -t $object` &&
+	    t=$(git cat-file -t $object) &&
 	    git cat-file $t $object || return 1
 	 done <obj-list
     } >current &&
-    test_cmp expect current'
+    cmp expect current'
 
 test_expect_success \
     'use packed deltified (OFS_DELTA) objects' \
@@ -177,11 +177,11 @@ test_expect_success \
 	 git diff-tree --root -p $commit &&
 	 while read object
 	 do
-	    t=`git cat-file -t $object` &&
+	    t=$(git cat-file -t $object) &&
 	    git cat-file $t $object || return 1
 	 done <obj-list
     } >current &&
-    test_cmp expect current'
+    cmp expect current'
 
 unset GIT_OBJECT_DIRECTORY
 
@@ -195,9 +195,9 @@ test_expect_success 'survive missing objects/pack directory' '
 		rm -fr $GOP &&
 		git index-pack --stdin --keep=test <../test-3-${packname_3}.pack &&
 		test -f $GOP/pack-${packname_3}.pack &&
-		test_cmp $GOP/pack-${packname_3}.pack ../test-3-${packname_3}.pack &&
+		cmp $GOP/pack-${packname_3}.pack ../test-3-${packname_3}.pack &&
 		test -f $GOP/pack-${packname_3}.idx &&
-		test_cmp $GOP/pack-${packname_3}.idx ../test-3-${packname_3}.idx &&
+		cmp $GOP/pack-${packname_3}.idx ../test-3-${packname_3}.idx &&
 		test -f $GOP/pack-${packname_3}.keep
 	)
 '
@@ -252,8 +252,8 @@ test_expect_success \
 
 test_expect_success \
     'verify-pack catches a corrupted sum of the index file itself' \
-    'l=`wc -c <test-3.idx` &&
-     l=`expr $l - 20` &&
+    'l=$(wc -c <test-3.idx) &&
+     l=$(expr $l - 20) &&
      cat test-1-${packname_1}.pack >test-3.pack &&
      printf "%20s" "" | dd of=test-3.idx count=20 bs=1 conv=notrunc seek=$l &&
      if git verify-pack test-3.pack

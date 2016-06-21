@@ -3,6 +3,7 @@
 #include "unpack-trees.h"
 #include "dir.h"
 #include "tree.h"
+#include "pathspec.h"
 
 static const char *get_mode(const char *str, unsigned int *modep)
 {
@@ -36,7 +37,7 @@ static void decode_tree_entry(struct tree_desc *desc, const char *buf, unsigned 
 
 	/* Initialize the descriptor entry */
 	desc->entry.path = path;
-	desc->entry.mode = mode;
+	desc->entry.mode = canon_mode(mode);
 	desc->entry.sha1 = (const unsigned char *)(path + len);
 }
 
@@ -142,16 +143,6 @@ struct tree_desc_x {
 	struct tree_desc d;
 	struct tree_desc_skip *skip;
 };
-
-static int name_compare(const char *a, int a_len,
-			const char *b, int b_len)
-{
-	int len = (a_len < b_len) ? a_len : b_len;
-	int cmp = memcmp(a, b, len);
-	if (cmp)
-		return cmp;
-	return (a_len - b_len);
-}
 
 static int check_entry_match(const char *a, int a_len, const char *b, int b_len)
 {
@@ -323,13 +314,13 @@ static inline int prune_traversal(struct name_entry *e,
 
 int traverse_trees(int n, struct tree_desc *t, struct traverse_info *info)
 {
-	int ret = 0;
 	int error = 0;
 	struct name_entry *entry = xmalloc(n*sizeof(*entry));
 	int i;
 	struct tree_desc_x *tx = xcalloc(n, sizeof(*tx));
 	struct strbuf base = STRBUF_INIT;
 	int interesting = 1;
+	char *traverse_path;
 
 	for (i = 0; i < n; i++)
 		tx[i].d = t[i];
@@ -339,8 +330,13 @@ int traverse_trees(int n, struct tree_desc *t, struct traverse_info *info)
 		make_traverse_path(base.buf, info->prev, &info->name);
 		base.buf[info->pathlen-1] = '/';
 		strbuf_setlen(&base, info->pathlen);
+		traverse_path = xstrndup(base.buf, info->pathlen);
+	} else {
+		traverse_path = xstrndup(info->name.path, info->pathlen);
 	}
+	info->traverse_path = traverse_path;
 	for (;;) {
+		int trees_used;
 		unsigned long mask, dirmask;
 		const char *first = NULL;
 		int first_len = 0;
@@ -404,15 +400,14 @@ int traverse_trees(int n, struct tree_desc *t, struct traverse_info *info)
 		if (interesting < 0)
 			break;
 		if (interesting) {
-			ret = info->fn(n, mask, dirmask, entry, info);
-			if (ret < 0) {
-				error = ret;
+			trees_used = info->fn(n, mask, dirmask, entry, info);
+			if (trees_used < 0) {
+				error = trees_used;
 				if (!info->show_all_errors)
 					break;
 			}
-			mask &= ret;
+			mask &= trees_used;
 		}
-		ret = 0;
 		for (i = 0; i < n; i++)
 			if (mask & (1ul << i))
 				update_extended_entry(tx + i, entry + i);
@@ -421,9 +416,17 @@ int traverse_trees(int n, struct tree_desc *t, struct traverse_info *info)
 	for (i = 0; i < n; i++)
 		free_extended_entry(tx + i);
 	free(tx);
+	free(traverse_path);
+	info->traverse_path = NULL;
 	strbuf_release(&base);
 	return error;
 }
+
+struct dir_state {
+	void *tree;
+	unsigned long size;
+	unsigned char sha1[20];
+};
 
 static int find_tree_entry(struct tree_desc *t, const char *name, unsigned char *result, unsigned *mode)
 {
@@ -488,13 +491,225 @@ int get_tree_entry(const unsigned char *tree_sha1, const char *name, unsigned ch
 	return retval;
 }
 
-static int match_entry(const struct name_entry *entry, int pathlen,
+/*
+ * This is Linux's built-in max for the number of symlinks to follow.
+ * That limit, of course, does not affect git, but it's a reasonable
+ * choice.
+ */
+#define GET_TREE_ENTRY_FOLLOW_SYMLINKS_MAX_LINKS 40
+
+/**
+ * Find a tree entry by following symlinks in tree_sha (which is
+ * assumed to be the root of the repository).  In the event that a
+ * symlink points outside the repository (e.g. a link to /foo or a
+ * root-level link to ../foo), the portion of the link which is
+ * outside the repository will be returned in result_path, and *mode
+ * will be set to 0.  It is assumed that result_path is uninitialized.
+ * If there are no symlinks, or the end result of the symlink chain
+ * points to an object inside the repository, result will be filled in
+ * with the sha1 of the found object, and *mode will hold the mode of
+ * the object.
+ *
+ * See the code for enum follow_symlink_result for a description of
+ * the return values.
+ */
+enum follow_symlinks_result get_tree_entry_follow_symlinks(unsigned char *tree_sha1, const char *name, unsigned char *result, struct strbuf *result_path, unsigned *mode)
+{
+	int retval = MISSING_OBJECT;
+	struct dir_state *parents = NULL;
+	size_t parents_alloc = 0;
+	ssize_t parents_nr = 0;
+	unsigned char current_tree_sha1[20];
+	struct strbuf namebuf = STRBUF_INIT;
+	struct tree_desc t;
+	int follows_remaining = GET_TREE_ENTRY_FOLLOW_SYMLINKS_MAX_LINKS;
+	int i;
+
+	init_tree_desc(&t, NULL, 0UL);
+	strbuf_init(result_path, 0);
+	strbuf_addstr(&namebuf, name);
+	hashcpy(current_tree_sha1, tree_sha1);
+
+	while (1) {
+		int find_result;
+		char *first_slash;
+		char *remainder = NULL;
+
+		if (!t.buffer) {
+			void *tree;
+			unsigned char root[20];
+			unsigned long size;
+			tree = read_object_with_reference(current_tree_sha1,
+							  tree_type, &size,
+							  root);
+			if (!tree)
+				goto done;
+
+			ALLOC_GROW(parents, parents_nr + 1, parents_alloc);
+			parents[parents_nr].tree = tree;
+			parents[parents_nr].size = size;
+			hashcpy(parents[parents_nr].sha1, root);
+			parents_nr++;
+
+			if (namebuf.buf[0] == '\0') {
+				hashcpy(result, root);
+				retval = FOUND;
+				goto done;
+			}
+
+			if (!size)
+				goto done;
+
+			/* descend */
+			init_tree_desc(&t, tree, size);
+		}
+
+		/* Handle symlinks to e.g. a//b by removing leading slashes */
+		while (namebuf.buf[0] == '/') {
+			strbuf_remove(&namebuf, 0, 1);
+		}
+
+		/* Split namebuf into a first component and a remainder */
+		if ((first_slash = strchr(namebuf.buf, '/'))) {
+			*first_slash = 0;
+			remainder = first_slash + 1;
+		}
+
+		if (!strcmp(namebuf.buf, "..")) {
+			struct dir_state *parent;
+			/*
+			 * We could end up with .. in the namebuf if it
+			 * appears in a symlink.
+			 */
+
+			if (parents_nr == 1) {
+				if (remainder)
+					*first_slash = '/';
+				strbuf_add(result_path, namebuf.buf,
+					   namebuf.len);
+				*mode = 0;
+				retval = FOUND;
+				goto done;
+			}
+			parent = &parents[parents_nr - 1];
+			free(parent->tree);
+			parents_nr--;
+			parent = &parents[parents_nr - 1];
+			init_tree_desc(&t, parent->tree, parent->size);
+			strbuf_remove(&namebuf, 0, remainder ? 3 : 2);
+			continue;
+		}
+
+		/* We could end up here via a symlink to dir/.. */
+		if (namebuf.buf[0] == '\0') {
+			hashcpy(result, parents[parents_nr - 1].sha1);
+			retval = FOUND;
+			goto done;
+		}
+
+		/* Look up the first (or only) path component in the tree. */
+		find_result = find_tree_entry(&t, namebuf.buf,
+					      current_tree_sha1, mode);
+		if (find_result) {
+			goto done;
+		}
+
+		if (S_ISDIR(*mode)) {
+			if (!remainder) {
+				hashcpy(result, current_tree_sha1);
+				retval = FOUND;
+				goto done;
+			}
+			/* Descend the tree */
+			t.buffer = NULL;
+			strbuf_remove(&namebuf, 0,
+				      1 + first_slash - namebuf.buf);
+		} else if (S_ISREG(*mode)) {
+			if (!remainder) {
+				hashcpy(result, current_tree_sha1);
+				retval = FOUND;
+			} else {
+				retval = NOT_DIR;
+			}
+			goto done;
+		} else if (S_ISLNK(*mode)) {
+			/* Follow a symlink */
+			unsigned long link_len;
+			size_t len;
+			char *contents, *contents_start;
+			struct dir_state *parent;
+			enum object_type type;
+
+			if (follows_remaining-- == 0) {
+				/* Too many symlinks followed */
+				retval = SYMLINK_LOOP;
+				goto done;
+			}
+
+			/*
+			 * At this point, we have followed at a least
+			 * one symlink, so on error we need to report this.
+			 */
+			retval = DANGLING_SYMLINK;
+
+			contents = read_sha1_file(current_tree_sha1, &type,
+						  &link_len);
+
+			if (!contents)
+				goto done;
+
+			if (contents[0] == '/') {
+				strbuf_addstr(result_path, contents);
+				free(contents);
+				*mode = 0;
+				retval = FOUND;
+				goto done;
+			}
+
+			if (remainder)
+				len = first_slash - namebuf.buf;
+			else
+				len = namebuf.len;
+
+			contents_start = contents;
+
+			parent = &parents[parents_nr - 1];
+			init_tree_desc(&t, parent->tree, parent->size);
+			strbuf_splice(&namebuf, 0, len,
+				      contents_start, link_len);
+			if (remainder)
+				namebuf.buf[link_len] = '/';
+			free(contents);
+		}
+	}
+done:
+	for (i = 0; i < parents_nr; i++)
+		free(parents[i].tree);
+	free(parents);
+
+	strbuf_release(&namebuf);
+	return retval;
+}
+
+static int match_entry(const struct pathspec_item *item,
+		       const struct name_entry *entry, int pathlen,
 		       const char *match, int matchlen,
 		       enum interesting *never_interesting)
 {
 	int m = -1; /* signals that we haven't called strncmp() */
 
-	if (*never_interesting != entry_not_interesting) {
+	if (item->magic & PATHSPEC_ICASE)
+		/*
+		 * "Never interesting" trick requires exact
+		 * matching. We could do something clever with inexact
+		 * matching, but it's trickier (and not to forget that
+		 * strcasecmp is locale-dependent, at least in
+		 * glibc). Just disable it for now. It can't be worse
+		 * than the wildcard's codepath of '[Tt][Hi][Is][Ss]'
+		 * pattern.
+		 */
+		*never_interesting = entry_not_interesting;
+	else if (*never_interesting != entry_not_interesting) {
 		/*
 		 * We have not seen any match that sorts later
 		 * than the current path.
@@ -531,7 +746,7 @@ static int match_entry(const struct name_entry *entry, int pathlen,
 	if (matchlen > pathlen) {
 		if (match[pathlen] != '/')
 			return 0;
-		if (!S_ISDIR(entry->mode))
+		if (!S_ISDIR(entry->mode) && !S_ISGITLINK(entry->mode))
 			return 0;
 	}
 
@@ -540,7 +755,7 @@ static int match_entry(const struct name_entry *entry, int pathlen,
 		 * we cheated and did not do strncmp(), so we do
 		 * that here.
 		 */
-		m = strncmp(match, entry->path, pathlen);
+		m = ps_strncmp(item, match, entry->path, pathlen);
 
 	/*
 	 * If common part matched earlier then it is a hit,
@@ -548,15 +763,39 @@ static int match_entry(const struct name_entry *entry, int pathlen,
 	 * leading directory and is shorter than match.
 	 */
 	if (!m)
+		/*
+		 * match_entry does not check if the prefix part is
+		 * matched case-sensitively. If the entry is a
+		 * directory and part of prefix, it'll be rematched
+		 * eventually by basecmp with special treatment for
+		 * the prefix.
+		 */
 		return 1;
 
 	return 0;
 }
 
-static int match_dir_prefix(const char *base,
+/* :(icase)-aware string compare */
+static int basecmp(const struct pathspec_item *item,
+		   const char *base, const char *match, int len)
+{
+	if (item->magic & PATHSPEC_ICASE) {
+		int ret, n = len > item->prefix ? item->prefix : len;
+		ret = strncmp(base, match, n);
+		if (ret)
+			return ret;
+		base += n;
+		match += n;
+		len -= n;
+	}
+	return ps_strncmp(item, base, match, len);
+}
+
+static int match_dir_prefix(const struct pathspec_item *item,
+			    const char *base,
 			    const char *match, int matchlen)
 {
-	if (strncmp(base, match, matchlen))
+	if (basecmp(item, base, match, matchlen))
 		return 0;
 
 	/*
@@ -593,7 +832,7 @@ static int match_wildcard_base(const struct pathspec_item *item,
 		 */
 		if (baselen >= matchlen) {
 			*matched = matchlen;
-			return !strncmp(base, match, matchlen);
+			return !basecmp(item, base, match, matchlen);
 		}
 
 		dirlen = matchlen;
@@ -606,7 +845,7 @@ static int match_wildcard_base(const struct pathspec_item *item,
 		 * base ends with '/' so we are sure it really matches
 		 * directory
 		 */
-		if (strncmp(base, match, baselen))
+		if (basecmp(item, base, match, baselen))
 			return 0;
 		*matched = baselen;
 	} else
@@ -626,17 +865,28 @@ static int match_wildcard_base(const struct pathspec_item *item,
  * Pre-condition: either baselen == base_offset (i.e. empty path)
  * or base[baselen-1] == '/' (i.e. with trailing slash).
  */
-enum interesting tree_entry_interesting(const struct name_entry *entry,
-					struct strbuf *base, int base_offset,
-					const struct pathspec *ps)
+static enum interesting do_match(const struct name_entry *entry,
+				 struct strbuf *base, int base_offset,
+				 const struct pathspec *ps,
+				 int exclude)
 {
 	int i;
 	int pathlen, baselen = base->len - base_offset;
 	enum interesting never_interesting = ps->has_wildcard ?
 		entry_not_interesting : all_entries_not_interesting;
 
+	GUARD_PATHSPEC(ps,
+		       PATHSPEC_FROMTOP |
+		       PATHSPEC_MAXDEPTH |
+		       PATHSPEC_LITERAL |
+		       PATHSPEC_GLOB |
+		       PATHSPEC_ICASE |
+		       PATHSPEC_EXCLUDE);
+
 	if (!ps->nr) {
-		if (!ps->recursive || ps->max_depth == -1)
+		if (!ps->recursive ||
+		    !(ps->magic & PATHSPEC_MAXDEPTH) ||
+		    ps->max_depth == -1)
 			return all_entries_interesting;
 		return within_depth(base->buf + base_offset, baselen,
 				    !!S_ISDIR(entry->mode),
@@ -652,12 +902,18 @@ enum interesting tree_entry_interesting(const struct name_entry *entry,
 		const char *base_str = base->buf + base_offset;
 		int matchlen = item->len, matched = 0;
 
+		if ((!exclude &&   item->magic & PATHSPEC_EXCLUDE) ||
+		    ( exclude && !(item->magic & PATHSPEC_EXCLUDE)))
+			continue;
+
 		if (baselen >= matchlen) {
 			/* If it doesn't match, move along... */
-			if (!match_dir_prefix(base_str, match, matchlen))
+			if (!match_dir_prefix(item, base_str, match, matchlen))
 				goto match_wildcards;
 
-			if (!ps->recursive || ps->max_depth == -1)
+			if (!ps->recursive ||
+			    !(ps->magic & PATHSPEC_MAXDEPTH) ||
+			    ps->max_depth == -1)
 				return all_entries_interesting;
 
 			return within_depth(base_str + matchlen + 1,
@@ -668,15 +924,14 @@ enum interesting tree_entry_interesting(const struct name_entry *entry,
 		}
 
 		/* Either there must be no base, or the base must match. */
-		if (baselen == 0 || !strncmp(base_str, match, baselen)) {
-			if (match_entry(entry, pathlen,
+		if (baselen == 0 || !basecmp(item, base_str, match, baselen)) {
+			if (match_entry(item, entry, pathlen,
 					match + baselen, matchlen - baselen,
 					&never_interesting))
 				return entry_interesting;
 
 			if (item->nowildcard_len < item->len) {
-				if (!git_fnmatch(match + baselen, entry->path,
-						 item->flags & PATHSPEC_ONESTAR ? GFNM_ONESTAR : 0,
+				if (!git_fnmatch(item, match + baselen, entry->path,
 						 item->nowildcard_len - baselen))
 					return entry_interesting;
 
@@ -697,7 +952,7 @@ match_wildcards:
 
 		if (item->nowildcard_len &&
 		    !match_wildcard_base(item, base_str, baselen, &matched))
-			return entry_not_interesting;
+			continue;
 
 		/*
 		 * Concatenate base and entry->path into one and do
@@ -717,8 +972,7 @@ match_wildcards:
 
 		strbuf_add(base, entry->path, pathlen);
 
-		if (!git_fnmatch(match, base->buf + base_offset,
-				 item->flags & PATHSPEC_ONESTAR ? GFNM_ONESTAR : 0,
+		if (!git_fnmatch(item, match, base->buf + base_offset,
 				 item->nowildcard_len)) {
 			strbuf_setlen(base, base_offset + baselen);
 			return entry_interesting;
@@ -736,4 +990,73 @@ match_wildcards:
 			return entry_interesting;
 	}
 	return never_interesting; /* No matches */
+}
+
+/*
+ * Is a tree entry interesting given the pathspec we have?
+ *
+ * Pre-condition: either baselen == base_offset (i.e. empty path)
+ * or base[baselen-1] == '/' (i.e. with trailing slash).
+ */
+enum interesting tree_entry_interesting(const struct name_entry *entry,
+					struct strbuf *base, int base_offset,
+					const struct pathspec *ps)
+{
+	enum interesting positive, negative;
+	positive = do_match(entry, base, base_offset, ps, 0);
+
+	/*
+	 * case | entry | positive | negative | result
+	 * -----+-------+----------+----------+-------
+	 *   1  |  file |   -1     |  -1..2   |  -1
+	 *   2  |  file |    0     |  -1..2   |   0
+	 *   3  |  file |    1     |   -1     |   1
+	 *   4  |  file |    1     |    0     |   1
+	 *   5  |  file |    1     |    1     |   0
+	 *   6  |  file |    1     |    2     |   0
+	 *   7  |  file |    2     |   -1     |   2
+	 *   8  |  file |    2     |    0     |   2
+	 *   9  |  file |    2     |    1     |   0
+	 *  10  |  file |    2     |    2     |  -1
+	 * -----+-------+----------+----------+-------
+	 *  11  |  dir  |   -1     |  -1..2   |  -1
+	 *  12  |  dir  |    0     |  -1..2   |   0
+	 *  13  |  dir  |    1     |   -1     |   1
+	 *  14  |  dir  |    1     |    0     |   1
+	 *  15  |  dir  |    1     |    1     |   1 (*)
+	 *  16  |  dir  |    1     |    2     |   0
+	 *  17  |  dir  |    2     |   -1     |   2
+	 *  18  |  dir  |    2     |    0     |   2
+	 *  19  |  dir  |    2     |    1     |   1 (*)
+	 *  20  |  dir  |    2     |    2     |  -1
+	 *
+	 * (*) An exclude pattern interested in a directory does not
+	 * necessarily mean it will exclude all of the directory. In
+	 * wildcard case, it can't decide until looking at individual
+	 * files inside. So don't write such directories off yet.
+	 */
+
+	if (!(ps->magic & PATHSPEC_EXCLUDE) ||
+	    positive <= entry_not_interesting) /* #1, #2, #11, #12 */
+		return positive;
+
+	negative = do_match(entry, base, base_offset, ps, 1);
+
+	/* #3, #4, #7, #8, #13, #14, #17, #18 */
+	if (negative <= entry_not_interesting)
+		return positive;
+
+	/* #15, #19 */
+	if (S_ISDIR(entry->mode) &&
+	    positive >= entry_interesting &&
+	    negative == entry_interesting)
+		return entry_interesting;
+
+	if ((positive == entry_interesting &&
+	     negative >= entry_interesting) || /* #5, #6, #16 */
+	    (positive == all_entries_interesting &&
+	     negative == entry_interesting)) /* #9 */
+		return entry_not_interesting;
+
+	return all_entries_not_interesting; /* #10, #20 */
 }

@@ -1,7 +1,7 @@
 [[def_alternate_object_database]]alternate object database::
 	Via the alternates mechanism, a <<def_repository,repository>>
 	can inherit part of its <<def_object_database,object database>>
-	from another object database, which is called "alternate".
+	from another object database, which is called an "alternate".
 
 [[def_bare_repository]]bare repository::
 	A bare repository is normally an appropriately
@@ -82,6 +82,18 @@ to point at the new commit.
 	to the top <<def_directory,directory>> of the stored
 	revision.
 
+[[def_commit-ish]]commit-ish (also committish)::
+	A <<def_commit_object,commit object>> or an
+	<<def_object,object>> that can be recursively dereferenced to
+	a commit object.
+	The following are all commit-ishes:
+	a commit object,
+	a <<def_tag_object,tag object>> that points to a commit
+	object,
+	a tag object that points to a tag object that points to a
+	commit object,
+	etc.
+
 [[def_core_git]]core Git::
 	Fundamental data structures and utilities of Git. Exposes only limited
 	source code management tools.
@@ -113,7 +125,7 @@ Note that commands that operate on the history of the current branch
 while the HEAD is detached. They update the HEAD to point at the tip
 of the updated history without affecting any branch.  Commands that
 update or inquire information _about_ the current branch (e.g. `git
-branch --set-upstream-to` that sets what remote tracking branch the
+branch --set-upstream-to` that sets what remote-tracking branch the
 current branch integrates with) obviously do not work, as there is no
 (real) current branch to ask about in this state.
 
@@ -164,6 +176,10 @@ current branch integrates with) obviously do not work, as there is no
 	you can make Git pretend the set of <<def_parent,parents>> a <<def_commit,commit>> has
 	is different from what was recorded when the commit was
 	created. Configured via the `.git/info/grafts` file.
++
+Note that the grafts mechanism is outdated and can lead to problems
+transferring objects between repositories; see linkgit:git-replace[1]
+for a more flexible and robust system to do the same thing.
 
 [[def_hash]]hash::
 	In Git's context, synonym for <<def_object_name,object name>>.
@@ -267,7 +283,7 @@ This commit is referred to as a "merge commit", or sometimes just a
 	The default upstream <<def_repository,repository>>. Most projects have
 	at least one upstream project which they track. By default
 	'origin' is used for that purpose. New upstream updates
-	will be fetched into remote <<def_remote_tracking_branch,remote-tracking branches>> named
+	will be fetched into <<def_remote_tracking_branch,remote-tracking branches>> named
 	origin/name-of-upstream-branch, which you can see using
 	`git branch -r`.
 
@@ -311,24 +327,68 @@ including Documentation/chapter_1/figure_1.jpg.
 A pathspec that begins with a colon `:` has special meaning.  In the
 short form, the leading colon `:` is followed by zero or more "magic
 signature" letters (which optionally is terminated by another colon `:`),
-and the remainder is the pattern to match against the path. The optional
-colon that terminates the "magic signature" can be omitted if the pattern
-begins with a character that cannot be a "magic signature" and is not a
-colon.
+and the remainder is the pattern to match against the path.
+The "magic signature" consists of ASCII symbols that are neither
+alphanumeric, glob, regex special characters nor colon.
+The optional colon that terminates the "magic signature" can be
+omitted if the pattern begins with a character that does not belong to
+"magic signature" symbol set and is not a colon.
 +
 In the long form, the leading colon `:` is followed by a open
 parenthesis `(`, a comma-separated list of zero or more "magic words",
 and a close parentheses `)`, and the remainder is the pattern to match
 against the path.
 +
-The "magic signature" consists of an ASCII symbol that is not
-alphanumeric. Currently only the slash `/` is recognized as a
-"magic signature": it makes the pattern match from the root of
-the working tree, even when you are running the command from
-inside a subdirectory.
-+
 A pathspec with only a colon means "there is no pathspec". This form
 should not be combined with other pathspec.
++
+--
+top;;
+	The magic word `top` (magic signature: `/`) makes the pattern
+	match from the root of the working tree, even when you are
+	running the command from inside a subdirectory.
+
+literal;;
+	Wildcards in the pattern such as `*` or `?` are treated
+	as literal characters.
+
+icase;;
+	Case insensitive match.
+
+glob;;
+	Git treats the pattern as a shell glob suitable for
+	consumption by fnmatch(3) with the FNM_PATHNAME flag:
+	wildcards in the pattern will not match a / in the pathname.
+	For example, "Documentation/{asterisk}.html" matches
+	"Documentation/git.html" but not "Documentation/ppc/ppc.html"
+	or "tools/perf/Documentation/perf.html".
++
+Two consecutive asterisks ("`**`") in patterns matched against
+full pathname may have special meaning:
+
+ - A leading "`**`" followed by a slash means match in all
+   directories. For example, "`**/foo`" matches file or directory
+   "`foo`" anywhere, the same as pattern "`foo`". "`**/foo/bar`"
+   matches file or directory "`bar`" anywhere that is directly
+   under directory "`foo`".
+
+ - A trailing "`/**`" matches everything inside. For example,
+   "`abc/**`" matches all files inside directory "abc", relative
+   to the location of the `.gitignore` file, with infinite depth.
+
+ - A slash followed by two consecutive asterisks then a slash
+   matches zero or more directories. For example, "`a/**/b`"
+   matches "`a/b`", "`a/x/b`", "`a/x/y/b`" and so on.
+
+ - Other consecutive asterisks are considered invalid.
++
+Glob magic is incompatible with literal magic.
+
+exclude;;
+	After a path matches any non-exclude pathspec, it will be run
+	through all exclude pathspec (magic signature: `!`). If it
+	matches, the path is ignored.
+--
 
 [[def_parent]]parent::
 	A <<def_commit_object,commit object>> contains a (possibly empty) list
@@ -350,6 +410,28 @@ should not be combined with other pathspec.
 	<<def_core_git,core Git>>, presenting a high level access to
 	core Git. Porcelains expose more of a <<def_SCM,SCM>>
 	interface than the <<def_plumbing,plumbing>>.
+
+[[def_per_worktree_ref]]per-worktree ref::
+	Refs that are per-<<def_working_tree,worktree>>, rather than
+	global.  This is presently only <<def_HEAD,HEAD>> and any refs
+	that start with `refs/bisect/`, but might later include other
+	unusual refs.
+
+[[def_pseudoref]]pseudoref::
+	Pseudorefs are a class of files under `$GIT_DIR` which behave
+	like refs for the purposes of rev-parse, but which are treated
+	specially by git.  Pseudorefs both have names that are all-caps,
+	and always start with a line consisting of a
+	<<def_SHA1,SHA-1>> followed by whitespace.  So, HEAD is not a
+	pseudoref, because it is sometimes a symbolic ref.  They might
+	optionally contain some additional data.  `MERGE_HEAD` and
+	`CHERRY_PICK_HEAD` are examples.  Unlike
+	<<def_per_worktree_ref,per-worktree refs>>, these files cannot
+	be symbolic refs, and never have reflogs.  They also cannot be
+	updated through the normal ref update machinery.  Instead,
+	they are updated by directly writing to the files.  However,
+	they can be read as if they were refs, so `git rev-parse
+	MERGE_HEAD` will work.
 
 [[def_pull]]pull::
 	Pulling a <<def_branch,branch>> means to <<def_fetch,fetch>> it and
@@ -383,10 +465,20 @@ should not be combined with other pathspec.
 	to the result.
 
 [[def_ref]]ref::
-	A 40-byte hex representation of a <<def_SHA1,SHA-1>> or a name that
-	denotes a particular <<def_object,object>>. They may be stored in
-	a file under `$GIT_DIR/refs/` directory, or
-	in the `$GIT_DIR/packed-refs` file.
+	A name that begins with `refs/` (e.g. `refs/heads/master`)
+	that points to an <<def_object_name,object name>> or another
+	ref (the latter is called a <<def_symref,symbolic ref>>).
+	For convenience, a ref can sometimes be abbreviated when used
+	as an argument to a Git command; see linkgit:gitrevisions[7]
+	for details.
+	Refs are stored in the <<def_repository,repository>>.
++
+The ref namespace is hierarchical.
+Different subhierarchies are used for different purposes (e.g. the
+`refs/heads/` hierarchy is used to represent local branches).
++
+There are a few special-purpose refs that do not begin with `refs/`.
+The most notable example is `HEAD`.
 
 [[def_reflog]]reflog::
 	A reflog shows the local "history" of a ref.  In other words,
@@ -398,6 +490,11 @@ should not be combined with other pathspec.
 	A "refspec" is used by <<def_fetch,fetch>> and
 	<<def_push,push>> to describe the mapping between remote
 	<<def_ref,ref>> and local ref.
+
+[[def_remote]]remote repository::
+	A <<def_repository,repository>> which is used to track the same
+	project but resides somewhere else. To communicate with remotes,
+	see <<def_fetch,fetch>> or <<def_push,push>>.
 
 [[def_remote_tracking_branch]]remote-tracking branch::
 	A <<def_ref,ref>> that is used to follow changes from another
@@ -434,6 +531,11 @@ should not be combined with other pathspec.
 	"Secure Hash Algorithm 1"; a cryptographic hash function.
 	In the context of Git used as a synonym for <<def_object_name,object name>>.
 
+[[def_shallow_clone]]shallow clone::
+	Mostly a synonym to <<def_shallow_repository,shallow repository>>
+	but the phrase makes it more explicit that it was created by
+	running `git clone --depth=...` command.
+
 [[def_shallow_repository]]shallow repository::
 	A shallow <<def_repository,repository>> has an incomplete
 	history some of whose <<def_commit,commits>> have <<def_parent,parents>> cauterized away (in other
@@ -444,6 +546,17 @@ should not be combined with other pathspec.
 	upstream is much larger. A shallow repository
 	is created by giving the `--depth` option to linkgit:git-clone[1], and
 	its history can be later deepened with linkgit:git-fetch[1].
+
+[[def_submodule]]submodule::
+	A <<def_repository,repository>> that holds the history of a
+	separate project inside another repository (the latter of
+	which is called <<def_superproject, superproject>>).
+
+[[def_superproject]]superproject::
+	A <<def_repository,repository>> that references repositories
+	of other projects in its working tree as <<def_submodule,submodules>>.
+	The superproject knows about the names of (but does not hold
+	copies of) commit objects of the contained submodules.
 
 [[def_symref]]symref::
 	Symbolic reference: instead of containing the <<def_SHA1,SHA-1>>
@@ -486,10 +599,19 @@ should not be combined with other pathspec.
 	with refs to the associated blob and/or tree objects. A
 	<<def_tree,tree>> is equivalent to a <<def_directory,directory>>.
 
-[[def_tree-ish]]tree-ish::
-	A <<def_ref,ref>> pointing to either a <<def_commit_object,commit
-	object>>, a <<def_tree_object,tree object>>, or a <<def_tag_object,tag
-	object>> pointing to a tag or commit or tree object.
+[[def_tree-ish]]tree-ish (also treeish)::
+	A <<def_tree_object,tree object>> or an <<def_object,object>>
+	that can be recursively dereferenced to a tree object.
+	Dereferencing a <<def_commit_object,commit object>> yields the
+	tree object corresponding to the <<def_revision,revision>>'s
+	top <<def_directory,directory>>.
+	The following are all tree-ishes:
+	a <<def_commit-ish,commit-ish>>,
+	a tree object,
+	a <<def_tag_object,tag object>> that points to a tree object,
+	a tag object that points to a tag object that points to a tree
+	object,
+	etc.
 
 [[def_unmerged_index]]unmerged index::
 	An <<def_index,index>> which contains unmerged

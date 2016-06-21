@@ -1,4 +1,5 @@
 #include "cache.h"
+#include "refs.h"
 #include "remote.h"
 #include "strbuf.h"
 #include "url.h"
@@ -78,11 +79,11 @@ static int parse_rev_note(const char *msg, struct rev_note *res)
 	size_t len;
 
 	while (*msg) {
-		end = strchr(msg, '\n');
-		len = end ? end - msg : strlen(msg);
+		end = strchrnul(msg, '\n');
+		len = end - msg;
 
 		key = "Revision-number: ";
-		if (!prefixcmp(msg, key)) {
+		if (starts_with(msg, key)) {
 			long i;
 			char *end;
 			value = msg + strlen(key);
@@ -153,8 +154,8 @@ static void check_or_regenerate_marks(int latestrev)
 		fclose(marksfile);
 	} else {
 		strbuf_addf(&sb, ":%d ", latestrev);
-		while (strbuf_getline(&line, marksfile, '\n') != EOF) {
-			if (!prefixcmp(line.buf, sb.buf)) {
+		while (strbuf_getline_lf(&line, marksfile) != EOF) {
+			if (starts_with(line.buf, sb.buf)) {
 				found++;
 				break;
 			}
@@ -175,8 +176,8 @@ static int cmd_import(const char *line)
 	char *note_msg;
 	unsigned char head_sha1[20];
 	unsigned int startrev;
-	struct argv_array svndump_argv = ARGV_ARRAY_INIT;
-	struct child_process svndump_proc;
+	struct child_process svndump_proc = CHILD_PROCESS_INIT;
+	const char *command = "svnrdump";
 
 	if (read_ref(private_ref, head_sha1))
 		startrev = 0;
@@ -200,17 +201,15 @@ static int cmd_import(const char *line)
 		if(dumpin_fd < 0)
 			die_errno("Couldn't open svn dump file %s.", url);
 	} else {
-		memset(&svndump_proc, 0, sizeof(struct child_process));
 		svndump_proc.out = -1;
-		argv_array_push(&svndump_argv, "svnrdump");
-		argv_array_push(&svndump_argv, "dump");
-		argv_array_push(&svndump_argv, url);
-		argv_array_pushf(&svndump_argv, "-r%u:HEAD", startrev);
-		svndump_proc.argv = svndump_argv.argv;
+		argv_array_push(&svndump_proc.args, command);
+		argv_array_push(&svndump_proc.args, "dump");
+		argv_array_push(&svndump_proc.args, url);
+		argv_array_pushf(&svndump_proc.args, "-r%u:HEAD", startrev);
 
 		code = start_command(&svndump_proc);
 		if (code)
-			die("Unable to start %s, code %d", svndump_proc.argv[0], code);
+			die("Unable to start %s, code %d", command, code);
 		dumpin_fd = svndump_proc.out;
 	}
 	/* setup marks file import/export */
@@ -226,8 +225,7 @@ static int cmd_import(const char *line)
 	if (!dump_from_file) {
 		code = finish_command(&svndump_proc);
 		if (code)
-			warning("%s, returned %d", svndump_proc.argv[0], code);
-		argv_array_clear(&svndump_argv);
+			warning("%s, returned %d", command, code);
 	}
 
 	return 0;
@@ -264,7 +262,7 @@ static int do_command(struct strbuf *line)
 		return 1;	/* end of command stream, quit */
 	}
 	if (batch_cmd) {
-		if (prefixcmp(batch_cmd->name, line->buf))
+		if (!starts_with(batch_cmd->name, line->buf))
 			die("Active %s batch interrupted by %s", batch_cmd->name, line->buf);
 		/* buffer batch lines */
 		string_list_append(&batchlines, line->buf);
@@ -272,7 +270,7 @@ static int do_command(struct strbuf *line)
 	}
 
 	for (p = input_command_list; p->name; p++) {
-		if (!prefixcmp(line->buf, p->name) && (strlen(p->name) == line->len ||
+		if (starts_with(line->buf, p->name) && (strlen(p->name) == line->len ||
 				line->buf[strlen(p->name)] == ' ')) {
 			if (p->batchable) {
 				batch_cmd = p;
@@ -304,7 +302,7 @@ int main(int argc, char **argv)
 	remote = remote_get(argv[1]);
 	url_in = (argc == 3) ? argv[2] : remote->url[0];
 
-	if (!prefixcmp(url_in, "file://")) {
+	if (starts_with(url_in, "file://")) {
 		dump_from_file = 1;
 		url = url_decode(url_in + sizeof("file://")-1);
 	} else {
@@ -324,7 +322,7 @@ int main(int argc, char **argv)
 	marksfilename = marksfilename_sb.buf;
 
 	while (1) {
-		if (strbuf_getline(&buf, stdin, '\n') == EOF) {
+		if (strbuf_getline_lf(&buf, stdin) == EOF) {
 			if (ferror(stdin))
 				die("Error reading command stream");
 			else

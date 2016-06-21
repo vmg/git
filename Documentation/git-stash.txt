@@ -13,10 +13,11 @@ SYNOPSIS
 'git stash' drop [-q|--quiet] [<stash>]
 'git stash' ( pop | apply ) [--index] [-q|--quiet] [<stash>]
 'git stash' branch <branchname> [<stash>]
-'git stash' [save [--patch] [-k|--[no-]keep-index] [-q|--quiet]
+'git stash' [save [-p|--patch] [-k|--[no-]keep-index] [-q|--quiet]
 	     [-u|--include-untracked] [-a|--all] [<message>]]
 'git stash' clear
-'git stash' create
+'git stash' create [<message>]
+'git stash' store [-m|--message <message>] [-q|--quiet] <commit>
 
 DESCRIPTION
 -----------
@@ -43,7 +44,7 @@ is also possible).
 OPTIONS
 -------
 
-save [-p|--patch] [--[no-]keep-index] [-u|--include-untracked] [-a|--all] [-q|--quiet] [<message>]::
+save [-p|--patch] [-k|--[no-]keep-index] [-u|--include-untracked] [-a|--all] [-q|--quiet] [<message>]::
 
 	Save your local modifications to a new 'stash', and run `git reset
 	--hard` to revert them.  The <message> part is optional and gives
@@ -94,6 +95,8 @@ show [<stash>]::
 	shows the latest one. By default, the command shows the diffstat, but
 	it will accept any format known to 'git diff' (e.g., `git stash show
 	-p stash@{1}` to view the second most recent stash in patch form).
+	You can use stash.showStat and/or stash.showPatch config variables
+	to change the default behavior.
 
 pop [--index] [-q|--quiet] [<stash>]::
 
@@ -151,7 +154,15 @@ create::
 
 	Create a stash (which is a regular commit object) and return its
 	object name, without storing it anywhere in the ref namespace.
+	This is intended to be useful for scripts.  It is probably not
+	the command you want to use; see "save" above.
 
+store::
+
+	Store a given stash created via 'git stash create' (which is a
+	dangling merge commit) in the stash ref, updating the stash
+	reflog.  This is intended to be useful for scripts.  It is
+	probably not the command you want to use; see "save" above.
 
 DISCUSSION
 ----------

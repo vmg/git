@@ -7,7 +7,7 @@
 
 static const char diff_cache_usage[] =
 "git diff-index [-m] [--cached] "
-"[<common diff options>] <tree-ish> [<path>...]"
+"[<common-diff-options>] <tree-ish> [<path>...]"
 COMMON_DIFF_OPTIONS_HELP;
 
 int cmd_diff_index(int argc, const char **argv, const char *prefix)
@@ -43,7 +43,7 @@ int cmd_diff_index(int argc, const char **argv, const char *prefix)
 		usage(diff_cache_usage);
 	if (!cached) {
 		setup_work_tree();
-		if (read_cache_preload(rev.diffopt.pathspec.raw) < 0) {
+		if (read_cache_preload(&rev.diffopt.pathspec) < 0) {
 			perror("read_cache_preload");
 			return -1;
 		}

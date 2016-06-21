@@ -8,6 +8,7 @@
  * Copyright (c) 2005, 2006 Linus Torvalds and Junio C Hamano
  */
 #include "builtin.h"
+#include "lockfile.h"
 #include "tag.h"
 #include "object.h"
 #include "commit.h"
@@ -35,7 +36,7 @@ static const char *reset_type_names[] = {
 
 static inline int is_merge(void)
 {
-	return !access(git_path("MERGE_HEAD"), F_OK);
+	return !access(git_path_merge_head(), F_OK);
 }
 
 static int reset_index(const unsigned char *sha1, int reset_type, int quiet)
@@ -84,7 +85,7 @@ static int reset_index(const unsigned char *sha1, int reset_type, int quiet)
 
 	if (reset_type == MIXED || reset_type == HARD) {
 		tree = parse_tree_indirect(sha1);
-		prime_cache_tree(&active_cache_tree, tree);
+		prime_cache_tree(&the_index, tree);
 	}
 
 	return 0;
@@ -93,10 +94,12 @@ static int reset_index(const unsigned char *sha1, int reset_type, int quiet)
 static void print_new_head_line(struct commit *commit)
 {
 	const char *hex, *body;
+	const char *msg;
 
-	hex = find_unique_abbrev(commit->object.sha1, DEFAULT_ABBREV);
+	hex = find_unique_abbrev(commit->object.oid.hash, DEFAULT_ABBREV);
 	printf(_("HEAD is now at %s"), hex);
-	body = strstr(commit->buffer, "\n\n");
+	msg = logmsg_reencode(commit, NULL, get_log_output_encoding());
+	body = strstr(msg, "\n\n");
 	if (body) {
 		const char *eol;
 		size_t len;
@@ -107,44 +110,55 @@ static void print_new_head_line(struct commit *commit)
 	}
 	else
 		printf("\n");
+	unuse_commit_buffer(commit, msg);
 }
 
 static void update_index_from_diff(struct diff_queue_struct *q,
 		struct diff_options *opt, void *data)
 {
 	int i;
+	int intent_to_add = *(int *)data;
 
 	for (i = 0; i < q->nr; i++) {
 		struct diff_filespec *one = q->queue[i]->one;
-		if (one->mode && !is_null_sha1(one->sha1)) {
-			struct cache_entry *ce;
-			ce = make_cache_entry(one->mode, one->sha1, one->path,
-				0, 0);
-			if (!ce)
-				die(_("make_cache_entry failed for path '%s'"),
-				    one->path);
-			add_cache_entry(ce, ADD_CACHE_OK_TO_ADD |
-				ADD_CACHE_OK_TO_REPLACE);
-		} else
+		int is_missing = !(one->mode && !is_null_sha1(one->sha1));
+		struct cache_entry *ce;
+
+		if (is_missing && !intent_to_add) {
 			remove_file_from_cache(one->path);
+			continue;
+		}
+
+		ce = make_cache_entry(one->mode, one->sha1, one->path,
+				      0, 0);
+		if (!ce)
+			die(_("make_cache_entry failed for path '%s'"),
+			    one->path);
+		if (is_missing) {
+			ce->ce_flags |= CE_INTENT_TO_ADD;
+			set_object_name_for_intent_to_add_entry(ce);
+		}
+		add_cache_entry(ce, ADD_CACHE_OK_TO_ADD | ADD_CACHE_OK_TO_REPLACE);
 	}
 }
 
-static int read_from_tree(const char **pathspec, unsigned char *tree_sha1)
+static int read_from_tree(const struct pathspec *pathspec,
+			  unsigned char *tree_sha1,
+			  int intent_to_add)
 {
 	struct diff_options opt;
 
 	memset(&opt, 0, sizeof(opt));
-	diff_tree_setup_paths(pathspec, &opt);
+	copy_pathspec(&opt.pathspec, pathspec);
 	opt.output_format = DIFF_FORMAT_CALLBACK;
 	opt.format_callback = update_index_from_diff;
+	opt.format_callback_data = &intent_to_add;
 
-	read_cache();
 	if (do_diff_cache(tree_sha1, &opt))
 		return 1;
 	diffcore_std(&opt);
 	diff_flush(&opt);
-	diff_tree_release_paths(&opt);
+	free_pathspec(&opt.pathspec);
 
 	return 0;
 }
@@ -165,13 +179,16 @@ static void set_reflog_message(struct strbuf *sb, const char *action,
 
 static void die_if_unmerged_cache(int reset_type)
 {
-	if (is_merge() || read_cache() < 0 || unmerged_cache())
+	if (is_merge() || unmerged_cache())
 		die(_("Cannot do a %s reset in the middle of a merge."),
 		    _(reset_type_names[reset_type]));
 
 }
 
-static const char **parse_args(const char **argv, const char *prefix, const char **rev_ret)
+static void parse_args(struct pathspec *pathspec,
+		       const char **argv, const char *prefix,
+		       int patch_mode,
+		       const char **rev_ret)
 {
 	const char *rev = "HEAD";
 	unsigned char unused[20];
@@ -213,10 +230,18 @@ static const char **parse_args(const char **argv, const char *prefix, const char
 		}
 	}
 	*rev_ret = rev;
-	return argv[0] ? get_pathspec(prefix, argv) : NULL;
+
+	if (read_cache() < 0)
+		die(_("index file corrupt"));
+
+	parse_pathspec(pathspec, 0,
+		       PATHSPEC_PREFER_FULL |
+		       PATHSPEC_STRIP_SUBMODULE_SLASH_CHEAP |
+		       (patch_mode ? PATHSPEC_PREFIX_ORIGIN : 0),
+		       prefix, argv);
 }
 
-static int update_refs(const char *rev, const unsigned char *sha1)
+static int reset_refs(const char *rev, const unsigned char *sha1)
 {
 	int update_ref_status;
 	struct strbuf msg = STRBUF_INIT;
@@ -228,11 +253,13 @@ static int update_refs(const char *rev, const unsigned char *sha1)
 	if (!get_sha1("HEAD", sha1_orig)) {
 		orig = sha1_orig;
 		set_reflog_message(&msg, "updating ORIG_HEAD", NULL);
-		update_ref(msg.buf, "ORIG_HEAD", orig, old_orig, 0, MSG_ON_ERR);
+		update_ref(msg.buf, "ORIG_HEAD", orig, old_orig, 0,
+			   UPDATE_REFS_MSG_ON_ERR);
 	} else if (old_orig)
 		delete_ref("ORIG_HEAD", old_orig, 0);
 	set_reflog_message(&msg, "updating HEAD", rev);
-	update_ref_status = update_ref(msg.buf, "HEAD", sha1, orig, 0, MSG_ON_ERR);
+	update_ref_status = update_ref(msg.buf, "HEAD", sha1, orig, 0,
+				       UPDATE_REFS_MSG_ON_ERR);
 	strbuf_release(&msg);
 	return update_ref_status;
 }
@@ -242,8 +269,9 @@ int cmd_reset(int argc, const char **argv, const char *prefix)
 	int reset_type = NONE, update_ref_status = 0, quiet = 0;
 	int patch_mode = 0, unborn;
 	const char *rev;
-	unsigned char sha1[20];
-	const char **pathspec = NULL;
+	struct object_id oid;
+	struct pathspec pathspec;
+	int intent_to_add = 0;
 	const struct option options[] = {
 		OPT__QUIET(&quiet, N_("be quiet, only report errors")),
 		OPT_SET_INT(0, "mixed", &reset_type,
@@ -255,7 +283,9 @@ int cmd_reset(int argc, const char **argv, const char *prefix)
 				N_("reset HEAD, index and working tree"), MERGE),
 		OPT_SET_INT(0, "keep", &reset_type,
 				N_("reset HEAD but keep local changes"), KEEP),
-		OPT_BOOLEAN('p', "patch", &patch_mode, N_("select hunks interactively")),
+		OPT_BOOL('p', "patch", &patch_mode, N_("select hunks interactively")),
+		OPT_BOOL('N', "intent-to-add", &intent_to_add,
+				N_("record only the fact that removed paths will be added later")),
 		OPT_END()
 	};
 
@@ -263,40 +293,40 @@ int cmd_reset(int argc, const char **argv, const char *prefix)
 
 	argc = parse_options(argc, argv, prefix, options, git_reset_usage,
 						PARSE_OPT_KEEP_DASHDASH);
-	pathspec = parse_args(argv, prefix, &rev);
+	parse_args(&pathspec, argv, prefix, patch_mode, &rev);
 
-	unborn = !strcmp(rev, "HEAD") && get_sha1("HEAD", sha1);
+	unborn = !strcmp(rev, "HEAD") && get_sha1("HEAD", oid.hash);
 	if (unborn) {
 		/* reset on unborn branch: treat as reset to empty tree */
-		hashcpy(sha1, EMPTY_TREE_SHA1_BIN);
-	} else if (!pathspec) {
+		hashcpy(oid.hash, EMPTY_TREE_SHA1_BIN);
+	} else if (!pathspec.nr) {
 		struct commit *commit;
-		if (get_sha1_committish(rev, sha1))
+		if (get_sha1_committish(rev, oid.hash))
 			die(_("Failed to resolve '%s' as a valid revision."), rev);
-		commit = lookup_commit_reference(sha1);
+		commit = lookup_commit_reference(oid.hash);
 		if (!commit)
 			die(_("Could not parse object '%s'."), rev);
-		hashcpy(sha1, commit->object.sha1);
+		oidcpy(&oid, &commit->object.oid);
 	} else {
 		struct tree *tree;
-		if (get_sha1_treeish(rev, sha1))
+		if (get_sha1_treeish(rev, oid.hash))
 			die(_("Failed to resolve '%s' as a valid tree."), rev);
-		tree = parse_tree_indirect(sha1);
+		tree = parse_tree_indirect(oid.hash);
 		if (!tree)
 			die(_("Could not parse object '%s'."), rev);
-		hashcpy(sha1, tree->object.sha1);
+		oidcpy(&oid, &tree->object.oid);
 	}
 
 	if (patch_mode) {
 		if (reset_type != NONE)
 			die(_("--patch is incompatible with --{hard,mixed,soft}"));
-		return run_add_interactive(sha1_to_hex(sha1), "--patch=reset", pathspec);
+		return run_add_interactive(rev, "--patch=reset", &pathspec);
 	}
 
 	/* git reset tree [--] paths... can be used to
 	 * load chosen paths from the tree into the index without
 	 * affecting the working tree nor HEAD. */
-	if (pathspec) {
+	if (pathspec.nr) {
 		if (reset_type == MIXED)
 			warning(_("--mixed with paths is deprecated; use 'git reset -- <paths>' instead."));
 		else if (reset_type != NONE)
@@ -306,12 +336,15 @@ int cmd_reset(int argc, const char **argv, const char *prefix)
 	if (reset_type == NONE)
 		reset_type = MIXED; /* by default */
 
-	if (reset_type != SOFT && reset_type != MIXED)
+	if (reset_type != SOFT && (reset_type != MIXED || get_git_work_tree()))
 		setup_work_tree();
 
 	if (reset_type == MIXED && is_bare_repository())
 		die(_("%s reset is not allowed in a bare repository"),
 		    _(reset_type_names[reset_type]));
+
+	if (intent_to_add && reset_type != MIXED)
+		die(_("-N can only be used with --mixed"));
 
 	/* Soft reset does not touch the index file nor the working tree
 	 * at all, but requires them in a good order.  Other resets reset
@@ -320,39 +353,36 @@ int cmd_reset(int argc, const char **argv, const char *prefix)
 		die_if_unmerged_cache(reset_type);
 
 	if (reset_type != SOFT) {
-		struct lock_file *lock = xcalloc(1, sizeof(struct lock_file));
-		int newfd = hold_locked_index(lock, 1);
+		struct lock_file *lock = xcalloc(1, sizeof(*lock));
+		hold_locked_index(lock, 1);
 		if (reset_type == MIXED) {
-			if (read_from_tree(pathspec, sha1))
+			int flags = quiet ? REFRESH_QUIET : REFRESH_IN_PORCELAIN;
+			if (read_from_tree(&pathspec, oid.hash, intent_to_add))
 				return 1;
+			if (get_git_work_tree())
+				refresh_index(&the_index, flags, NULL, NULL,
+					      _("Unstaged changes after reset:"));
 		} else {
-			int err = reset_index(sha1, reset_type, quiet);
+			int err = reset_index(oid.hash, reset_type, quiet);
 			if (reset_type == KEEP && !err)
-				err = reset_index(sha1, MIXED, quiet);
+				err = reset_index(oid.hash, MIXED, quiet);
 			if (err)
 				die(_("Could not reset index file to revision '%s'."), rev);
 		}
 
-		if (reset_type == MIXED) { /* Report what has not been updated. */
-			int flags = quiet ? REFRESH_QUIET : REFRESH_IN_PORCELAIN;
-			refresh_index(&the_index, flags, NULL, NULL,
-				      _("Unstaged changes after reset:"));
-		}
-
-		if (write_cache(newfd, active_cache, active_nr) ||
-		    commit_locked_index(lock))
+		if (write_locked_index(&the_index, lock, COMMIT_LOCK))
 			die(_("Could not write new index file."));
 	}
 
-	if (!pathspec && !unborn) {
+	if (!pathspec.nr && !unborn) {
 		/* Any resets without paths update HEAD to the head being
 		 * switched to, saving the previous head in ORIG_HEAD before. */
-		update_ref_status = update_refs(rev, sha1);
+		update_ref_status = reset_refs(rev, oid.hash);
 
 		if (reset_type == HARD && !update_ref_status && !quiet)
-			print_new_head_line(lookup_commit_reference(sha1));
+			print_new_head_line(lookup_commit_reference(oid.hash));
 	}
-	if (!pathspec)
+	if (!pathspec.nr)
 		remove_branch_state();
 
 	return update_ref_status;

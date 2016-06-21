@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include "string-list.h"
 #include "color.h"
+#include "pathspec.h"
 
 enum color_wt_status {
 	WT_STATUS_HEADER = 0,
@@ -44,12 +45,14 @@ struct wt_status {
 	int is_initial;
 	char *branch;
 	const char *reference;
-	const char **pathspec;
+	struct pathspec pathspec;
 	int verbose;
 	int amend;
 	enum commit_whence whence;
 	int nowarn;
 	int use_color;
+	int no_gettext;
+	int display_comment_prefix;
 	int relative_paths;
 	int submodule_summary;
 	int show_ignored_files;
@@ -59,6 +62,7 @@ struct wt_status {
 	unsigned colopts;
 	int null_termination;
 	int show_branch;
+	int hints;
 
 	/* These are computed during processing of the individual sections */
 	int commitable;
@@ -81,13 +85,17 @@ struct wt_status_state {
 	int cherry_pick_in_progress;
 	int bisect_in_progress;
 	int revert_in_progress;
+	int detached_at;
 	char *branch;
 	char *onto;
 	char *detached_from;
 	unsigned char detached_sha1[20];
 	unsigned char revert_head_sha1[20];
+	unsigned char cherry_pick_head_sha1[20];
 };
 
+void wt_status_truncate_message_at_cut_line(struct strbuf *);
+void wt_status_add_cut_line(FILE *fp);
 void wt_status_prepare(struct wt_status *s);
 void wt_status_print(struct wt_status *s);
 void wt_status_collect(struct wt_status *s);
@@ -96,9 +104,9 @@ void wt_status_get_state(struct wt_status_state *state, int get_detached_from);
 void wt_shortstatus_print(struct wt_status *s);
 void wt_porcelain_print(struct wt_status *s);
 
-void status_printf_ln(struct wt_status *s, const char *color, const char *fmt, ...)
-	;
-void status_printf(struct wt_status *s, const char *color, const char *fmt, ...)
-	;
+__attribute__((format (printf, 3, 4)))
+void status_printf_ln(struct wt_status *s, const char *color, const char *fmt, ...);
+__attribute__((format (printf, 3, 4)))
+void status_printf(struct wt_status *s, const char *color, const char *fmt, ...);
 
 #endif /* STATUS_H */

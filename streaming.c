@@ -111,11 +111,11 @@ static enum input_source istream_source(const unsigned char *sha1,
 	unsigned long size;
 	int status;
 
+	oi->typep = type;
 	oi->sizep = &size;
-	status = sha1_object_info_extended(sha1, oi);
+	status = sha1_object_info_extended(sha1, oi, 0);
 	if (status < 0)
 		return stream_error;
-	*type = status;
 
 	switch (oi->whence) {
 	case OI_LOOSE:
@@ -135,7 +135,7 @@ struct git_istream *open_istream(const unsigned char *sha1,
 				 struct stream_filter *filter)
 {
 	struct git_istream *st;
-	struct object_info oi;
+	struct object_info oi = {NULL};
 	const unsigned char *real = lookup_replace_object(sha1);
 	enum input_source src = istream_source(real, type, &oi);
 
@@ -149,11 +149,13 @@ struct git_istream *open_istream(const unsigned char *sha1,
 			return NULL;
 		}
 	}
-	if (st && filter) {
+	if (filter) {
 		/* Add "&& !is_null_stream_filter(filter)" for performance */
 		struct git_istream *nst = attach_stream_filter(st, filter);
-		if (!nst)
+		if (!nst) {
 			close_istream(st);
+			return NULL;
+		}
 		st = nst;
 	}
 
@@ -505,8 +507,11 @@ int stream_blob_to_fd(int fd, unsigned const char *sha1, struct stream_filter *f
 	int result = -1;
 
 	st = open_istream(sha1, &type, &sz, filter);
-	if (!st)
+	if (!st) {
+		if (filter)
+			free_stream_filter(filter);
 		return result;
+	}
 	if (type != OBJ_BLOB)
 		goto close_and_exit;
 	for (;;) {
@@ -538,7 +543,7 @@ int stream_blob_to_fd(int fd, unsigned const char *sha1, struct stream_filter *f
 			goto close_and_exit;
 	}
 	if (kept && (lseek(fd, kept - 1, SEEK_CUR) == (off_t) -1 ||
-		     write(fd, "", 1) != 1))
+		     xwrite(fd, "", 1) != 1))
 		goto close_and_exit;
 	result = 0;
 

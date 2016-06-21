@@ -44,6 +44,7 @@ extern struct notes_tree {
 	struct int_node *root;
 	struct non_note *first_non_note, *prev_non_note;
 	char *ref;
+	char *update_ref;
 	combine_notes_fn combine_notes;
 	int initialized;
 	int dirty;
@@ -72,12 +73,19 @@ const char *default_notes_ref(void);
 #define NOTES_INIT_EMPTY 1
 
 /*
+ * By default, the notes tree is only readable, and the notes ref can be
+ * any treeish. The notes tree can however be made writable with this flag,
+ * in which case only strict ref names can be used.
+ */
+#define NOTES_INIT_WRITABLE 2
+
+/*
  * Initialize the given notes_tree with the notes tree structure at the given
  * ref. If given ref is NULL, the value of the $GIT_NOTES_REF environment
  * variable is used, and if that is missing, the default notes ref is used
  * ("refs/notes/commits").
  *
- * If you need to re-intialize a notes_tree structure (e.g. when switching from
+ * If you need to re-initialize a notes_tree structure (e.g. when switching from
  * one notes ref to another), you must first de-initialize the notes_tree
  * structure by calling free_notes(struct notes_tree *).
  *
@@ -276,7 +284,7 @@ void format_display_notes(const unsigned char *object_sha1,
  * Load the notes tree from each ref listed in 'refs'.  The output is
  * an array of notes_tree*, terminated by a NULL.
  */
-struct notes_tree **load_notes_trees(struct string_list *refs);
+struct notes_tree **load_notes_trees(struct string_list *refs, int flags);
 
 /*
  * Add all refs that match 'glob' to the 'list'.
@@ -293,5 +301,12 @@ void string_list_add_refs_from_colon_sep(struct string_list *list,
 
 /* Expand inplace a note ref like "foo" or "notes/foo" into "refs/notes/foo" */
 void expand_notes_ref(struct strbuf *sb);
+
+/*
+ * Similar to expand_notes_ref, but will check whether the ref can be located
+ * via get_sha1 first, and only falls back to expand_notes_ref in the case
+ * where get_sha1 fails.
+ */
+void expand_loose_notes_ref(struct strbuf *sb);
 
 #endif

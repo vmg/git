@@ -68,17 +68,17 @@ then
     skip_all='skipping git-cvsserver tests, perl not available'
     test_done
 fi
-"$PERL_PATH" -e 'use DBI; use DBD::SQLite' >/dev/null 2>&1 || {
+perl -e 'use DBI; use DBD::SQLite' >/dev/null 2>&1 || {
     skip_all='skipping git-cvsserver tests, Perl SQLite interface unavailable'
     test_done
 }
 
 unset GIT_DIR GIT_CONFIG
-WORKDIR=$(pwd)
-SERVERDIR=$(pwd)/gitcvs.git
+WORKDIR=$PWD
+SERVERDIR=$PWD/gitcvs.git
 git_config="$SERVERDIR/config"
 CVSROOT=":fork:$SERVERDIR"
-CVSWORK="$(pwd)/cvswork"
+CVSWORK="$PWD/cvswork"
 CVS_SERVER=git-cvsserver
 export CVSROOT CVS_SERVER
 

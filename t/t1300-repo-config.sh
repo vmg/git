@@ -353,12 +353,34 @@ test_expect_success '--list without repo produces empty output' '
 '
 
 cat > expect << EOF
+beta.noindent
+nextsection.nonewline
+123456.a123
+version.1.2.3eX.alpha
+EOF
+
+test_expect_success '--name-only --list' '
+	git config --name-only --list >output &&
+	test_cmp expect output
+'
+
+cat > expect << EOF
 beta.noindent sillyValue
 nextsection.nonewline wow2 for me
 EOF
 
 test_expect_success '--get-regexp' '
 	git config --get-regexp in >output &&
+	test_cmp expect output
+'
+
+cat > expect << EOF
+beta.noindent
+nextsection.nonewline
+EOF
+
+test_expect_success '--name-only --get-regexp' '
+	git config --name-only --get-regexp in >output &&
 	test_cmp expect output
 '
 
@@ -461,7 +483,7 @@ test_expect_success 'new variable inserts into proper section' '
 	test_cmp expect .git/config
 '
 
-test_expect_success 'alternative GIT_CONFIG (non-existing file should fail)' '
+test_expect_success 'alternative --file (non-existing file should fail)' '
 	test_must_fail git config --file non-existing-config -l
 '
 
@@ -475,13 +497,26 @@ ein.bahn=strasse
 EOF
 
 test_expect_success 'alternative GIT_CONFIG' '
-	GIT_CONFIG=other-config git config -l >output &&
+	GIT_CONFIG=other-config git config --list >output &&
 	test_cmp expect output
 '
 
 test_expect_success 'alternative GIT_CONFIG (--file)' '
-	git config --file other-config -l > output &&
+	git config --file other-config --list >output &&
 	test_cmp expect output
+'
+
+test_expect_success 'alternative GIT_CONFIG (--file=-)' '
+	git config --file - --list <other-config >output &&
+	test_cmp expect output
+'
+
+test_expect_success 'setting a value in stdin is an error' '
+	test_must_fail git config --file - some.value foo
+'
+
+test_expect_success 'editing stdin is an error' '
+	test_must_fail git config --file - --edit
 '
 
 test_expect_success 'refer config from subdirectory' '
@@ -495,10 +530,10 @@ test_expect_success 'refer config from subdirectory' '
 
 '
 
-test_expect_success 'refer config from subdirectory via GIT_CONFIG' '
+test_expect_success 'refer config from subdirectory via --file' '
 	(
 		cd x &&
-		GIT_CONFIG=../other-config git config --get ein.bahn >actual &&
+		git config --file=../other-config --get ein.bahn >actual &&
 		test_cmp expect actual
 	)
 '
@@ -510,8 +545,8 @@ cat > expect << EOF
 	park = ausweis
 EOF
 
-test_expect_success '--set in alternative GIT_CONFIG' '
-	GIT_CONFIG=other-config git config anwohner.park ausweis &&
+test_expect_success '--set in alternative file' '
+	git config --file=other-config anwohner.park ausweis &&
 	test_cmp expect other-config
 '
 
@@ -652,16 +687,29 @@ test_expect_success numbers '
 	test_cmp expect actual
 '
 
+test_expect_success '--int is at least 64 bits' '
+	git config giga.watts 121g &&
+	echo 129922760704 >expect &&
+	git config --int --get giga.watts >actual &&
+	test_cmp expect actual
+'
+
 test_expect_success 'invalid unit' '
 	git config aninvalid.unit "1auto" &&
 	echo 1auto >expect &&
 	git config aninvalid.unit >actual &&
 	test_cmp expect actual &&
-	cat > expect <<-\EOF
-	fatal: bad config value for '\''aninvalid.unit'\'' in .git/config
+	cat >expect <<-\EOF &&
+	fatal: bad numeric config value '\''1auto'\'' for '\''aninvalid.unit'\'' in file .git/config: invalid unit
 	EOF
 	test_must_fail git config --int --get aninvalid.unit 2>actual &&
-	test_cmp actual expect
+	test_i18ncmp expect actual
+'
+
+test_expect_success 'invalid stdin config' '
+	echo "fatal: bad config line 1 in standard input " >expect &&
+	echo "[broken" | test_must_fail git config --list --file - >output 2>&1 &&
+	test_cmp expect output
 '
 
 cat > expect << EOF
@@ -804,14 +852,14 @@ cat >expect <<\EOF
 	trailingtilde = foo~
 EOF
 
-test_expect_success NOT_MINGW 'set --path' '
+test_expect_success !MINGW 'set --path' '
 	rm -f .git/config &&
 	git config --path path.home "~/" &&
 	git config --path path.normal "/dev/null" &&
 	git config --path path.trailingtilde "foo~" &&
 	test_cmp expect .git/config'
 
-if test_have_prereq NOT_MINGW && test "${HOME+set}"
+if test_have_prereq !MINGW && test "${HOME+set}"
 then
 	test_set_prereq HOMEVAR
 fi
@@ -834,7 +882,7 @@ cat >expect <<\EOF
 foo~
 EOF
 
-test_expect_success NOT_MINGW 'get --path copes with unset $HOME' '
+test_expect_success !MINGW 'get --path copes with unset $HOME' '
 	(
 		unset HOME;
 		test_must_fail git config --get --path path.home \
@@ -915,13 +963,15 @@ Qsection.sub=section.val4
 Qsection.sub=section.val5Q
 EOF
 test_expect_success '--null --list' '
-	git config --null --list | nul_to_q >result &&
+	git config --null --list >result.raw &&
+	nul_to_q <result.raw >result &&
 	echo >>result &&
 	test_cmp expect result
 '
 
 test_expect_success '--null --get-regexp' '
-	git config --null --get-regexp "val[0-9]" | nul_to_q >result &&
+	git config --null --get-regexp "val[0-9]" >result.raw &&
+	nul_to_q <result.raw >result &&
 	echo >>result &&
 	test_cmp expect result
 '
@@ -935,11 +985,11 @@ test_expect_success 'inner whitespace kept verbatim' '
 
 test_expect_success SYMLINKS 'symlinked configuration' '
 	ln -s notyet myconfig &&
-	GIT_CONFIG=myconfig git config test.frotz nitfol &&
+	git config --file=myconfig test.frotz nitfol &&
 	test -h myconfig &&
 	test -f notyet &&
-	test "z$(GIT_CONFIG=notyet git config test.frotz)" = znitfol &&
-	GIT_CONFIG=myconfig git config test.xyzzy rezrov &&
+	test "z$(git config --file=notyet test.frotz)" = znitfol &&
+	git config --file=myconfig test.xyzzy rezrov &&
 	test -h myconfig &&
 	test -f notyet &&
 	cat >expect <<-\EOF &&
@@ -947,31 +997,22 @@ test_expect_success SYMLINKS 'symlinked configuration' '
 	rezrov
 	EOF
 	{
-		GIT_CONFIG=notyet git config test.frotz &&
-		GIT_CONFIG=notyet git config test.xyzzy
+		git config --file=notyet test.frotz &&
+		git config --file=notyet test.xyzzy
 	} >actual &&
 	test_cmp expect actual
 '
 
 test_expect_success 'nonexistent configuration' '
-	(
-		GIT_CONFIG=doesnotexist &&
-		export GIT_CONFIG &&
-		test_must_fail git config --list &&
-		test_must_fail git config test.xyzzy
-	)
+	test_must_fail git config --file=doesnotexist --list &&
+	test_must_fail git config --file=doesnotexist test.xyzzy
 '
 
 test_expect_success SYMLINKS 'symlink to nonexistent configuration' '
 	ln -s doesnotexist linktonada &&
 	ln -s linktonada linktolinktonada &&
-	(
-		GIT_CONFIG=linktonada &&
-		export GIT_CONFIG &&
-		test_must_fail git config --list &&
-		GIT_CONFIG=linktolinktonada &&
-		test_must_fail git config --list
-	)
+	test_must_fail git config --file=linktonada --list &&
+	test_must_fail git config --file=linktolinktonada --list
 '
 
 test_expect_success 'check split_cmdline return' "
@@ -997,6 +1038,17 @@ test_expect_success 'git -c "key=value" support' '
 	} >actual &&
 	test_cmp expect actual &&
 	test_must_fail git -c name=value config core.name
+'
+
+# We just need a type-specifier here that cares about the
+# distinction internally between a NULL boolean and a real
+# string (because most of git's internal parsers do care).
+# Using "--path" works, but we do not otherwise care about
+# its semantics.
+test_expect_success 'git -c can represent empty string' '
+	echo >expect &&
+	git -c foo.empty= config --path foo.empty >actual &&
+	test_cmp expect actual
 '
 
 test_expect_success 'key sanity-checking' '
@@ -1087,6 +1139,31 @@ test_expect_success 'barf on incomplete string' '
 	grep " line 3 " error
 '
 
+test_expect_success 'urlmatch' '
+	cat >.git/config <<-\EOF &&
+	[http]
+		sslVerify
+	[http "https://weak.example.com"]
+		sslVerify = false
+		cookieFile = /tmp/cookie.txt
+	EOF
+
+	echo true >expect &&
+	git config --bool --get-urlmatch http.SSLverify https://good.example.com >actual &&
+	test_cmp expect actual &&
+
+	echo false >expect &&
+	git config --bool --get-urlmatch http.sslverify https://weak.example.com >actual &&
+	test_cmp expect actual &&
+
+	{
+		echo http.cookiefile /tmp/cookie.txt &&
+		echo http.sslverify false
+	} >expect &&
+	git config --get-urlmatch HTTP https://weak.example.com >actual &&
+	test_cmp expect actual
+'
+
 # good section hygiene
 test_expect_failure 'unsetting the last key in a section removes header' '
 	cat >.git/config <<-\EOF &&
@@ -1118,8 +1195,165 @@ test_expect_failure 'adding a key into an empty section reuses header' '
 	Qkey = value
 	EOF
 
-	git config section.key value
+	git config section.key value &&
 	test_cmp expect .git/config
+'
+
+test_expect_success POSIXPERM,PERL 'preserves existing permissions' '
+	chmod 0600 .git/config &&
+	git config imap.pass Hunter2 &&
+	perl -e \
+	  "die q(badset) if ((stat(q(.git/config)))[2] & 07777) != 0600" &&
+	git config --rename-section imap pop &&
+	perl -e \
+	  "die q(badrename) if ((stat(q(.git/config)))[2] & 07777) != 0600"
+'
+
+test_expect_success 'set up --show-origin tests' '
+	INCLUDE_DIR="$HOME/include" &&
+	mkdir -p "$INCLUDE_DIR" &&
+	cat >"$INCLUDE_DIR"/absolute.include <<-\EOF &&
+		[user]
+			absolute = include
+	EOF
+	cat >"$INCLUDE_DIR"/relative.include <<-\EOF &&
+		[user]
+			relative = include
+	EOF
+	cat >"$HOME"/.gitconfig <<-EOF &&
+		[user]
+			global = true
+			override = global
+		[include]
+			path = "$INCLUDE_DIR/absolute.include"
+	EOF
+	cat >.git/config <<-\EOF
+		[user]
+			local = true
+			override = local
+		[include]
+			path = ../include/relative.include
+	EOF
+'
+
+test_expect_success '--show-origin with --list' '
+	cat >expect <<-EOF &&
+		file:$HOME/.gitconfig	user.global=true
+		file:$HOME/.gitconfig	user.override=global
+		file:$HOME/.gitconfig	include.path=$INCLUDE_DIR/absolute.include
+		file:$INCLUDE_DIR/absolute.include	user.absolute=include
+		file:.git/config	user.local=true
+		file:.git/config	user.override=local
+		file:.git/config	include.path=../include/relative.include
+		file:.git/../include/relative.include	user.relative=include
+		command line:	user.cmdline=true
+	EOF
+	git -c user.cmdline=true config --list --show-origin >output &&
+	test_cmp expect output
+'
+
+test_expect_success '--show-origin with --list --null' '
+	cat >expect <<-EOF &&
+		file:$HOME/.gitconfigQuser.global
+		trueQfile:$HOME/.gitconfigQuser.override
+		globalQfile:$HOME/.gitconfigQinclude.path
+		$INCLUDE_DIR/absolute.includeQfile:$INCLUDE_DIR/absolute.includeQuser.absolute
+		includeQfile:.git/configQuser.local
+		trueQfile:.git/configQuser.override
+		localQfile:.git/configQinclude.path
+		../include/relative.includeQfile:.git/../include/relative.includeQuser.relative
+		includeQcommand line:Quser.cmdline
+		trueQ
+	EOF
+	git -c user.cmdline=true config --null --list --show-origin >output.raw &&
+	nul_to_q <output.raw >output &&
+	# The here-doc above adds a newline that the --null output would not
+	# include. Add it here to make the two comparable.
+	echo >>output &&
+	test_cmp expect output
+'
+
+test_expect_success '--show-origin with single file' '
+	cat >expect <<-\EOF &&
+		file:.git/config	user.local=true
+		file:.git/config	user.override=local
+		file:.git/config	include.path=../include/relative.include
+	EOF
+	git config --local --list --show-origin >output &&
+	test_cmp expect output
+'
+
+test_expect_success '--show-origin with --get-regexp' '
+	cat >expect <<-EOF &&
+		file:$HOME/.gitconfig	user.global true
+		file:.git/config	user.local true
+	EOF
+	git config --show-origin --get-regexp "user\.[g|l].*" >output &&
+	test_cmp expect output
+'
+
+test_expect_success '--show-origin getting a single key' '
+	cat >expect <<-\EOF &&
+		file:.git/config	local
+	EOF
+	git config --show-origin user.override >output &&
+	test_cmp expect output
+'
+
+test_expect_success 'set up custom config file' '
+	CUSTOM_CONFIG_FILE="file\" (dq) and spaces.conf" &&
+	cat >"$CUSTOM_CONFIG_FILE" <<-\EOF
+		[user]
+			custom = true
+	EOF
+'
+
+test_expect_success '--show-origin escape special file name characters' '
+	cat >expect <<-\EOF &&
+		file:"file\" (dq) and spaces.conf"	user.custom=true
+	EOF
+	git config --file "$CUSTOM_CONFIG_FILE" --show-origin --list >output &&
+	test_cmp expect output
+'
+
+test_expect_success '--show-origin stdin' '
+	cat >expect <<-\EOF &&
+		standard input:	user.custom=true
+	EOF
+	git config --file - --show-origin --list <"$CUSTOM_CONFIG_FILE" >output &&
+	test_cmp expect output
+'
+
+test_expect_success '--show-origin stdin with file include' '
+	cat >"$INCLUDE_DIR"/stdin.include <<-EOF &&
+		[user]
+			stdin = include
+	EOF
+	cat >expect <<-EOF &&
+		file:$INCLUDE_DIR/stdin.include	include
+	EOF
+	echo "[include]path=\"$INCLUDE_DIR\"/stdin.include" \
+		| git config --show-origin --includes --file - user.stdin >output &&
+	test_cmp expect output
+'
+
+test_expect_success '--show-origin blob' '
+	cat >expect <<-\EOF &&
+		blob:a9d9f9e555b5c6f07cbe09d3f06fe3df11e09c08	user.custom=true
+	EOF
+	blob=$(git hash-object -w "$CUSTOM_CONFIG_FILE") &&
+	git config --blob=$blob --show-origin --list >output &&
+	test_cmp expect output
+'
+
+test_expect_success '--show-origin blob ref' '
+	cat >expect <<-\EOF &&
+		blob:"master:file\" (dq) and spaces.conf"	user.custom=true
+	EOF
+	git add "$CUSTOM_CONFIG_FILE" &&
+	git commit -m "new config file" &&
+	git config --blob=master:"$CUSTOM_CONFIG_FILE" --show-origin --list >output &&
+	test_cmp expect output
 '
 
 test_done

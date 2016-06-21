@@ -297,7 +297,7 @@ test_expect_success 'setup incomplete lines' '
 	echo "Dominus regit me," >file &&
 	echo "incomplete line" | tr -d "\\012" >>file &&
 	git commit -a -m "Change incomplete line" &&
-	git tag incomplete_lines_chg
+	git tag incomplete_lines_chg &&
 	echo "Dominus regit me," >file &&
 	git commit -a -m "Remove incomplete line" &&
 	git tag incomplete_lines_rem
@@ -328,7 +328,7 @@ test_expect_success \
 	 git add b &&
 	 git commit -a -m "On branch" &&
 	 git checkout master &&
-	 git pull . b &&
+	 git merge b &&
 	 git tag merge_commit'
 
 test_expect_success \
@@ -683,9 +683,11 @@ test_expect_success \
 # syntax highlighting
 
 
-highlight --version >/dev/null 2>&1
+highlight_version=$(highlight --version </dev/null 2>/dev/null)
 if [ $? -eq 127 ]; then
-	say "Skipping syntax highlighting test, because 'highlight' was not found"
+	say "Skipping syntax highlighting tests: 'highlight' not found"
+elif test -z "$highlight_version"; then
+	say "Skipping syntax highlighting tests: incorrect 'highlight' found"
 else
 	test_set_prereq HIGHLIGHT
 	cat >>gitweb_config.perl <<-\EOF
@@ -777,7 +779,10 @@ test_expect_success \
 
 test_expect_success \
 	'unborn HEAD: "summary" page (with "heads" subview)' \
-	'git checkout orphan_branch || git checkout --orphan orphan_branch &&
+	'{
+		git checkout orphan_branch ||
+		git checkout --orphan orphan_branch
+	 } &&
 	 test_when_finished "git checkout master" &&
 	 gitweb_run "p=.git;a=summary"'
 

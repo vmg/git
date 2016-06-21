@@ -138,10 +138,37 @@ test_expect_success '--date magic does not override explicit @{0} syntax' '
 : >expect
 test_expect_success 'empty reflog file' '
 	git branch empty &&
-	: >.git/logs/refs/heads/empty &&
+	git reflog expire --expire=all refs/heads/empty &&
 
 	git log -g empty >actual &&
 	test_cmp expect actual
+'
+
+# This guards against the alternative of showing the diffs vs. the
+# reflog ancestor.  The reflog used is designed to list the commits
+# more than once, so as to exercise the corresponding logic.
+test_expect_success 'git log -g -p shows diffs vs. parents' '
+	test_commit two &&
+	git branch flipflop &&
+	git update-ref refs/heads/flipflop -m flip1 HEAD^ &&
+	git update-ref refs/heads/flipflop -m flop1 HEAD &&
+	git update-ref refs/heads/flipflop -m flip2 HEAD^ &&
+	git log -g -p flipflop >reflog &&
+	grep -v ^Reflog reflog >actual &&
+	git log -1 -p HEAD^ >log.one &&
+	git log -1 -p HEAD >log.two &&
+	(
+		cat log.one; echo
+		cat log.two; echo
+		cat log.one; echo
+		cat log.two
+	) >expect &&
+	test_cmp expect actual
+'
+
+test_expect_success 'reflog exists works' '
+	git reflog exists refs/heads/master &&
+	! git reflog exists refs/heads/nonexistent
 '
 
 test_done

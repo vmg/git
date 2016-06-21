@@ -3,13 +3,14 @@ git-checkout(1)
 
 NAME
 ----
-git-checkout - Checkout a branch or paths to the working tree
+git-checkout - Switch branches or restore working tree files
 
 SYNOPSIS
 --------
 [verse]
 'git checkout' [-q] [-f] [-m] [<branch>]
-'git checkout' [-q] [-f] [-m] [--detach] [<commit>]
+'git checkout' [-q] [-f] [-m] --detach [<branch>]
+'git checkout' [-q] [-f] [-m] [--detach] <commit>
 'git checkout' [-q] [-f] [-m] [[-b|-B|--orphan] <new_branch>] [<start_point>]
 'git checkout' [-f|--ours|--theirs|-m|--conflict=<style>] [<tree-ish>] [--] <paths>...
 'git checkout' [-p|--patch] [<tree-ish>] [--] [<paths>...]
@@ -62,7 +63,7 @@ that is to say, the branch is not reset/created unless "git checkout" is
 successful.
 
 'git checkout' --detach [<branch>]::
-'git checkout' <commit>::
+'git checkout' [--detach] <commit>::
 
 	Prepare to work on top of <commit>, by detaching HEAD at it
 	(see "DETACHED HEAD" section), and updating the index and the
@@ -71,10 +72,11 @@ successful.
 	tree will be the state recorded in the commit plus the local
 	modifications.
 +
-Passing `--detach` forces this behavior in the case of a <branch> (without
-the option, giving a branch name to the command would check out the branch,
-instead of detaching HEAD at it), or the current commit,
-if no <branch> is specified.
+When the <commit> argument is a branch name, the `--detach` option can
+be used to detach HEAD at the tip of the branch (`git checkout
+<branch>` would check out that branch without detaching HEAD).
++
+Omitting <branch> detaches HEAD at the tip of the current branch.
 
 'git checkout' [-p|--patch] [<tree-ish>] [--] <pathspec>...::
 
@@ -86,6 +88,10 @@ if no <branch> is specified.
 	<tree-ish> argument can be used to specify a specific tree-ish
 	(i.e.  commit, tag or tree) to update the index for the given
 	paths before updating the working tree.
++
+'git checkout' with <paths> or `--patch` is used to restore modified or
+deleted paths to their original contents from the index or replace paths
+with the contents from a named <tree-ish> (most often a commit-ish).
 +
 The index may contain unmerged entries because of a previous failed merge.
 By default, if you try to check out such an entry from the index, the
@@ -101,6 +107,12 @@ OPTIONS
 --quiet::
 	Quiet, suppress feedback messages.
 
+--[no-]progress::
+	Progress status is reported on the standard error stream
+	by default when it is attached to a terminal, unless `--quiet`
+	is specified. This flag enables progress reporting even if not
+	attached to a terminal, regardless of `--quiet`.
+
 -f::
 --force::
 	When switching branches, proceed even if the index or the
@@ -114,6 +126,21 @@ entries; instead, unmerged entries are ignored.
 --theirs::
 	When checking out paths from the index, check out stage #2
 	('ours') or #3 ('theirs') for unmerged paths.
++
+Note that during `git rebase` and `git pull --rebase`, 'ours' and
+'theirs' may appear swapped; `--ours` gives the version from the
+branch the changes are rebased onto, while `--theirs` gives the
+version from the branch that holds your work that is being rebased.
++
+This is because `rebase` is used in a workflow that treats the
+history at the remote as the shared canonical one, and treats the
+work done on the branch you are rebasing as the third-party work to
+be integrated, and you are temporarily assuming the role of the
+keeper of the canonical history during the rebase.  As the keeper of
+the canonical history, you need to view the history from the remote
+as `ours` (i.e. "our shared canonical history"), while what you did
+on your side branch as `theirs` (i.e. "one contributor's work on top
+of it").
 
 -b <new_branch>::
 	Create a new branch named <new_branch> and start it at
@@ -142,7 +169,7 @@ explicitly give a name with '-b' in such a case.
 
 --no-track::
 	Do not set up "upstream" configuration, even if the
-	branch.autosetupmerge configuration variable is true.
+	branch.autoSetupMerge configuration variable is true.
 
 -l::
 	Create the new branch's reflog; see linkgit:git-branch[1] for
@@ -208,7 +235,7 @@ the conflicted merge in the specified paths.
 --conflict=<style>::
 	The same as --merge option above, but changes the way the
 	conflicting hunks are presented, overriding the
-	merge.conflictstyle configuration variable.  Possible values are
+	merge.conflictStyle configuration variable.  Possible values are
 	"merge" (default) and "diff3" (in addition to what is shown by
 	"merge" style, shows the original contents).
 
@@ -223,6 +250,12 @@ This means that you can use `git checkout -p` to selectively discard
 edits from your current working tree. See the ``Interactive Mode''
 section of linkgit:git-add[1] to learn how to operate the `--patch` mode.
 
+--ignore-other-worktrees::
+	`git checkout` refuses when the wanted ref is already checked
+	out by another worktree. This option makes it check the ref
+	out anyway. In other words, the ref can be held by more than one
+	worktree.
+
 <branch>::
 	Branch to checkout; if it refers to a branch (i.e., a name that,
 	when prepended with "refs/heads/", is a valid ref), then that
@@ -230,8 +263,8 @@ section of linkgit:git-add[1] to learn how to operate the `--patch` mode.
 	commit, your HEAD becomes "detached" and you are no longer on
 	any branch (see below for details).
 +
-As a special case, the `"@{-N}"` syntax for the N-th last branch
-checks out the branch (instead of detaching).  You may also specify
+As a special case, the `"@{-N}"` syntax for the N-th last branch/commit
+checks out branches (instead of detaching).  You may also specify
 `-` which is synonymous with `"@{-1}"`.
 +
 As a further special case, you may use `"A...B"` as a shortcut for the

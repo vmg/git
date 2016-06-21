@@ -84,7 +84,7 @@ separator (rules for Perl's "`split(" ", $line)`").
 
 * Fields use modified URI encoding, defined in RFC 3986, section 2.1
 (Percent-Encoding), or rather "Query string encoding" (see
-link:http://en.wikipedia.org/wiki/Query_string#URL_encoding[]), the difference
+http://en.wikipedia.org/wiki/Query_string#URL_encoding[]), the difference
 being that SP (" ") can be encoded as "{plus}" (and therefore "{plus}" has to be
 also percent-encoded).
 +
@@ -504,7 +504,7 @@ repositories, you can configure Apache like this:
 
 The above configuration expects your public repositories to live under
 '/pub/git' and will serve them as `http://git.domain.org/dir-under-pub-git`,
-both as cloneable Git URL and as browseable gitweb interface.  If you then
+both as clonable Git URL and as browseable gitweb interface.  If you then
 start your linkgit:git-daemon[1] with `--base-path=/pub/git --export-all`
 then you can even use the `git://` URL with exactly the same path.
 

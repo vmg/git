@@ -14,6 +14,8 @@
 use strict;
 use MediaWiki::API;
 use Git;
+use Git::Mediawiki qw(clean_filename smudge_filename connect_maybe
+					EMPTY HTTP_CODE_OK);
 use DateTime::Format::ISO8601;
 use warnings;
 
@@ -22,9 +24,6 @@ binmode STDERR, ':encoding(UTF-8)';
 binmode STDOUT, ':encoding(UTF-8)';
 
 use URI::Escape;
-
-# Mediawiki filenames can contain forward slashes. This variable decides by which pattern they should be replaced
-use constant SLASH_REPLACEMENT => '%2F';
 
 # It's not always possible to delete pages (may require some
 # privileges). Deleted pages are replaced with this content.
@@ -40,8 +39,6 @@ use constant NULL_SHA1 => '0000000000000000000000000000000000000000';
 # Used on Git's side to reflect empty edit messages on the wiki
 use constant EMPTY_MESSAGE => '*Empty MediaWiki Message*';
 
-use constant EMPTY => q{};
-
 # Number of pages taken into account at once in submodule get_mw_page_list
 use constant SLICE_SIZE => 50;
 
@@ -49,8 +46,6 @@ use constant SLICE_SIZE => 50;
 # The query is split in small batches because of the MW API limit of
 # the number of links to be returned (500 links max).
 use constant BATCH_SIZE => 10;
-
-use constant HTTP_CODE_OK => 200;
 
 if (@ARGV != 2) {
 	exit_error_usage();
@@ -199,37 +194,6 @@ sub parse_command {
 # MediaWiki API instance, created lazily.
 my $mediawiki;
 
-sub mw_connect_maybe {
-	if ($mediawiki) {
-		return;
-	}
-	$mediawiki = MediaWiki::API->new;
-	$mediawiki->{config}->{api_url} = "${url}/api.php";
-	if ($wiki_login) {
-		my %credential = (
-			'url' => $url,
-			'username' => $wiki_login,
-			'password' => $wiki_passwd
-		);
-		Git::credential(\%credential);
-		my $request = {lgname => $credential{username},
-			       lgpassword => $credential{password},
-			       lgdomain => $wiki_domain};
-		if ($mediawiki->login($request)) {
-			Git::credential(\%credential, 'approve');
-			print {*STDERR} qq(Logged in mediawiki user "$credential{username}".\n);
-		} else {
-			print {*STDERR} qq(Failed to log in mediawiki user "$credential{username}" on ${url}\n);
-			print {*STDERR} '  (error ' .
-				$mediawiki->{error}->{code} . ': ' .
-				$mediawiki->{error}->{details} . ")\n";
-			Git::credential(\%credential, 'reject');
-			exit 1;
-		}
-	}
-	return;
-}
-
 sub fatal_mw_error {
 	my $action = shift;
 	print STDERR "fatal: could not $action.\n";
@@ -339,7 +303,7 @@ sub get_mw_first_pages {
 
 # Get the list of pages to be fetched according to configuration.
 sub get_mw_pages {
-	mw_connect_maybe();
+	$mediawiki = connect_maybe($mediawiki, $remotename, $url);
 
 	print {*STDERR} "Listing pages on remote wiki...\n";
 
@@ -497,7 +461,12 @@ sub download_mw_mediafile {
 
 	my $response = $mediawiki->{ua}->get($download_url);
 	if ($response->code == HTTP_CODE_OK) {
-		return $response->decoded_content;
+		# It is tempting to return
+		# $response->decoded_content({charset => "none"}), but
+		# when doing so, utf8::downgrade($content) fails with
+		# "Wide character in subroutine entry".
+		$response->decode();
+		return $response->content();
 	} else {
 		print {*STDERR} "Error downloading mediafile from :\n";
 		print {*STDERR} "URL: ${download_url}\n";
@@ -529,7 +498,7 @@ sub get_last_local_revision {
 # avoid a loop onto all tracked pages. This is useful for the fetch-by-rev
 # option.
 sub get_last_global_remote_rev {
-	mw_connect_maybe();
+	$mediawiki = connect_maybe($mediawiki, $remotename, $url);
 
 	my $query = {
 		action => 'query',
@@ -545,7 +514,7 @@ sub get_last_global_remote_rev {
 # Get the last remote revision concerning the tracked pages and the tracked
 # categories.
 sub get_last_remote_revision {
-	mw_connect_maybe();
+	$mediawiki = connect_maybe($mediawiki, $remotename, $url);
 
 	my %pages_hash = get_mw_pages();
 	my @pages = values(%pages_hash);
@@ -601,29 +570,6 @@ sub mediawiki_smudge {
 	return "${string}\n";
 }
 
-sub mediawiki_clean_filename {
-	my $filename = shift;
-	$filename =~ s{@{[SLASH_REPLACEMENT]}}{/}g;
-	# [, ], |, {, and } are forbidden by MediaWiki, even URL-encoded.
-	# Do a variant of URL-encoding, i.e. looks like URL-encoding,
-	# but with _ added to prevent MediaWiki from thinking this is
-	# an actual special character.
-	$filename =~ s/[\[\]\{\}\|]/sprintf("_%%_%x", ord($&))/ge;
-	# If we use the uri escape before
-	# we should unescape here, before anything
-
-	return $filename;
-}
-
-sub mediawiki_smudge_filename {
-	my $filename = shift;
-	$filename =~ s{/}{@{[SLASH_REPLACEMENT]}}g;
-	$filename =~ s/ /_/g;
-	# Decode forbidden characters encoded in mediawiki_clean_filename
-	$filename =~ s/_%_([0-9a-fA-F][0-9a-fA-F])/sprintf('%c', hex($1))/ge;
-	return $filename;
-}
-
 sub literal_data {
 	my ($content) = @_;
 	print {*STDOUT} 'data ', bytes::length($content), "\n", $content;
@@ -635,9 +581,9 @@ sub literal_data_raw {
 	my ($content) = @_;
 	# Avoid confusion between size in bytes and in characters
 	utf8::downgrade($content);
-	binmode {*STDOUT}, ':raw';
+	binmode STDOUT, ':raw';
 	print {*STDOUT} 'data ', bytes::length($content), "\n", $content;
-	binmode {*STDOUT}, ':encoding(UTF-8)';
+	binmode STDOUT, ':encoding(UTF-8)';
 	return;
 }
 
@@ -649,6 +595,9 @@ sub mw_capabilities {
 	print {*STDOUT} "import\n";
 	print {*STDOUT} "list\n";
 	print {*STDOUT} "push\n";
+	if ($dumb_push) {
+		print {*STDOUT} "no-private-update\n";
+	}
 	print {*STDOUT} "\n";
 	return;
 }
@@ -681,6 +630,9 @@ sub fetch_mw_revisions_for_page {
 		rvstartid => $fetch_from,
 		rvlimit => 500,
 		pageids => $id,
+
+		# Let MediaWiki know that we support the latest API.
+		continue => '',
 	};
 
 	my $revnum = 0;
@@ -696,8 +648,15 @@ sub fetch_mw_revisions_for_page {
 			push(@page_revs, $page_rev_ids);
 			$revnum++;
 		}
-		last if (!$result->{'query-continue'});
-		$query->{rvstartid} = $result->{'query-continue'}->{revisions}->{rvstartid};
+
+		if ($result->{'query-continue'}) { # For legacy APIs
+			$query->{rvstartid} = $result->{'query-continue'}->{revisions}->{rvstartid};
+		} elsif ($result->{continue}) { # For newer APIs
+			$query->{rvstartid} = $result->{continue}->{rvcontinue};
+			$query->{continue} = $result->{continue}->{continue};
+		} else {
+			last;
+		}
 	}
 	if ($shallow_import && @page_revs) {
 		print {*STDERR} "  Found 1 revision (shallow import).\n";
@@ -831,7 +790,7 @@ sub mw_import_ref {
 		return;
 	}
 
-	mw_connect_maybe();
+	$mediawiki = connect_maybe($mediawiki, $remotename, $url);
 
 	print {*STDERR} "Searching revisions...\n";
 	my $last_local = get_last_local_revision();
@@ -945,7 +904,7 @@ sub mw_import_revids {
 		my %commit;
 		$commit{author} = $rev->{user} || 'Anonymous';
 		$commit{comment} = $rev->{comment} || EMPTY_MESSAGE;
-		$commit{title} = mediawiki_smudge_filename($page_title);
+		$commit{title} = smudge_filename($page_title);
 		$commit{mw_revision} = $rev->{revid};
 		$commit{content} = mediawiki_smudge($rev->{'*'});
 
@@ -1006,7 +965,7 @@ sub mw_upload_file {
 	}
 	# Deleting and uploading a file requires a priviledged user
 	if ($file_deleted) {
-		mw_connect_maybe();
+		$mediawiki = connect_maybe($mediawiki, $remotename, $url);
 		my $query = {
 			action => 'delete',
 			title => $path,
@@ -1022,7 +981,7 @@ sub mw_upload_file {
 		# Don't let perl try to interpret file content as UTF-8 => use "raw"
 		my $content = run_git("cat-file blob ${new_sha1}", 'raw');
 		if ($content ne EMPTY) {
-			mw_connect_maybe();
+			$mediawiki = connect_maybe($mediawiki, $remotename, $url);
 			$mediawiki->{config}->{upload_url} =
 				"${url}/index.php/Special:Upload";
 			$mediawiki->edit({
@@ -1070,7 +1029,7 @@ sub mw_push_file {
 	my $old_sha1 = $diff_info_split[2];
 	my $page_created = ($old_sha1 eq NULL_SHA1);
 	my $page_deleted = ($new_sha1 eq NULL_SHA1);
-	$complete_file_name = mediawiki_clean_filename($complete_file_name);
+	$complete_file_name = clean_filename($complete_file_name);
 
 	my ($title, $extension) = $complete_file_name =~ /^(.*)\.([^\.]*)$/;
 	if (!defined($extension)) {
@@ -1093,7 +1052,7 @@ sub mw_push_file {
 			$file_content = run_git("cat-file blob ${new_sha1}");
 		}
 
-		mw_connect_maybe();
+		$mediawiki = connect_maybe($mediawiki, $remotename, $url);
 
 		my $result = $mediawiki->edit( {
 			action => 'edit',
@@ -1270,7 +1229,6 @@ sub mw_push_revision {
 		}
 		if (!$dumb_push) {
 			run_git(qq(notes --ref=${remotename}/mediawiki add -f -m "mediawiki_revision: ${mw_revision}" ${sha1_commit}));
-			run_git(qq(update-ref -m "Git-MediaWiki push" refs/mediawiki/${remotename}/master ${sha1_commit} ${sha1_child}));
 		}
 	}
 
@@ -1279,7 +1237,7 @@ sub mw_push_revision {
 }
 
 sub get_allowed_file_extensions {
-	mw_connect_maybe();
+	$mediawiki = connect_maybe($mediawiki, $remotename, $url);
 
 	my $query = {
 		action => 'query',
@@ -1303,7 +1261,7 @@ my %cached_mw_namespace_id;
 # Return MediaWiki id for a canonical namespace name.
 # Ex.: "File", "Project".
 sub get_mw_namespace_id {
-	mw_connect_maybe();
+	$mediawiki = connect_maybe($mediawiki, $remotename, $url);
 	my $name = shift;
 
 	if (!exists $namespace_id{$name}) {
@@ -1362,7 +1320,7 @@ sub get_mw_namespace_id {
 	# Store "notANameSpace" as special value for inexisting namespaces
 	my $store_id = ($id || 'notANameSpace');
 
-	# Store explicitely requested namespaces on disk
+	# Store explicitly requested namespaces on disk
 	if (!exists $cached_mw_namespace_id{$name}) {
 		run_git(qq(config --add remote.${remotename}.namespaceCache "${name}:${store_id}"));
 		$cached_mw_namespace_id{$name} = 1;

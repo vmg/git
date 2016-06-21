@@ -13,8 +13,7 @@
 /*
  * We detect based on the cURL version if multi-transfer is
  * usable in this implementation and define this symbol accordingly.
- * This is not something Makefile should set nor users should pass
- * via CFLAGS.
+ * This shouldn't be set by the Makefile or by the user (e.g. via CFLAGS).
  */
 #undef USE_CURL_MULTI
 
@@ -54,6 +53,8 @@
 struct slot_results {
 	CURLcode curl_result;
 	long http_code;
+	long auth_avail;
+	long http_connectcode;
 };
 
 struct active_request_slot {
@@ -85,9 +86,16 @@ extern curlioerr ioctl_buffer(CURL *handle, int cmd, void *clientp);
 extern struct active_request_slot *get_active_slot(void);
 extern int start_active_slot(struct active_request_slot *slot);
 extern void run_active_slot(struct active_request_slot *slot);
-extern void finish_active_slot(struct active_request_slot *slot);
 extern void finish_all_active_slots(void);
-extern int handle_curl_result(struct slot_results *results);
+
+/*
+ * This will run one slot to completion in a blocking manner, similar to how
+ * curl_easy_perform would work (but we don't want to use that, because
+ * we do not want to intermingle calls to curl_multi and curl_easy).
+ *
+ */
+int run_one_slot(struct active_request_slot *slot,
+		 struct slot_results *results);
 
 #ifdef USE_CURL_MULTI
 extern void fill_active_slots(void);
@@ -99,9 +107,11 @@ extern void http_init(struct remote *remote, const char *url,
 		      int proactive_auth);
 extern void http_cleanup(void);
 
+extern long int git_curl_ipresolve;
 extern int active_requests;
 extern int http_is_verbose;
 extern size_t http_post_buffer;
+extern struct credential http_auth;
 
 extern char curl_errorstr[CURL_ERROR_SIZE];
 
@@ -125,11 +135,37 @@ extern void append_remote_object_url(struct strbuf *buf, const char *url,
 extern char *get_remote_object_url(const char *url, const char *hex,
 				   int only_two_digit_prefix);
 
-/* Options for http_request_*() */
-#define HTTP_NO_CACHE		1
-#define HTTP_KEEP_ERROR		2
+/* Options for http_get_*() */
+struct http_get_options {
+	unsigned no_cache:1,
+		 keep_error:1;
 
-/* Return values for http_request_*() */
+	/* If non-NULL, returns the content-type of the response. */
+	struct strbuf *content_type;
+
+	/*
+	 * If non-NULL, and content_type above is non-NULL, returns
+	 * the charset parameter from the content-type. If none is
+	 * present, returns an empty string.
+	 */
+	struct strbuf *charset;
+
+	/*
+	 * If non-NULL, returns the URL we ended up at, including any
+	 * redirects we followed.
+	 */
+	struct strbuf *effective_url;
+
+	/*
+	 * If both base_url and effective_url are non-NULL, the base URL will
+	 * be munged to reflect any redirections going from the requested url
+	 * to effective_url. See the definition of update_url_from_redirect
+	 * for details.
+	 */
+	struct strbuf *base_url;
+};
+
+/* Return values for http_get_*() */
 #define HTTP_OK			0
 #define HTTP_MISSING_TARGET	1
 #define HTTP_ERROR		2
@@ -142,7 +178,7 @@ extern char *get_remote_object_url(const char *url, const char *hex,
  *
  * If the result pointer is NULL, a HTTP HEAD request is made instead of GET.
  */
-int http_get_strbuf(const char *url, struct strbuf *content_type, struct strbuf *result, int options);
+int http_get_strbuf(const char *url, struct strbuf *result, struct http_get_options *options);
 
 extern int http_fetch_ref(const char *base, struct ref *ref);
 
@@ -156,7 +192,6 @@ struct http_pack_request {
 	struct packed_git **lst;
 	FILE *packfile;
 	char tmpfile[PATH_MAX];
-	struct curl_slist *range_header;
 	struct active_request_slot *slot;
 };
 

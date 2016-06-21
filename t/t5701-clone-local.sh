@@ -12,8 +12,8 @@ test_expect_success 'preparing origin repository' '
 	: >file && git add . && git commit -m1 &&
 	git clone --bare . a.git &&
 	git clone --bare . x &&
-	test "$(GIT_CONFIG=a.git/config git config --bool core.bare)" = true &&
-	test "$(GIT_CONFIG=x/config git config --bool core.bare)" = true &&
+	test "$(cd a.git && git config --bool core.bare)" = true &&
+	test "$(cd x && git config --bool core.bare)" = true &&
 	git bundle create b1.bundle --all &&
 	git bundle create b2.bundle master &&
 	mkdir dir &&
@@ -24,7 +24,7 @@ test_expect_success 'preparing origin repository' '
 test_expect_success 'local clone without .git suffix' '
 	git clone -l -s a b &&
 	(cd b &&
-	test "$(GIT_CONFIG=.git/config git config --bool core.bare)" = false &&
+	test "$(git config --bool core.bare)" = false &&
 	git fetch)
 '
 
@@ -132,6 +132,10 @@ test_expect_success 'cloning file:// does not hardlink' '
 test_expect_success 'cloning a local path with --no-local does not hardlink' '
 	git clone --bare --no-local a force-nonlocal &&
 	! repo_is_hardlinked force-nonlocal
+'
+
+test_expect_success 'cloning locally respects "-u" for fetching refs' '
+	test_must_fail git clone --bare -u false a should_not_work.git
 '
 
 test_done
