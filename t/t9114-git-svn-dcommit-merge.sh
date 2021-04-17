@@ -27,9 +27,7 @@ cat << EOF
 # GNU General Public License for more details.
 #
 # You should have received a copy of the GNU General Public License
-# along with this program; if not, write to the Free Software
-# Foundation, Inc., 59 Temple Place, Suite 330, Boston,
-# MA 02111-1307 USA
+# along with this program; if not, see <http://www.gnu.org/licenses/>.
 #
 EOF
 }
@@ -48,7 +46,7 @@ test_expect_success 'setup svn repository' '
 test_expect_success 'setup git mirror and merge' '
 	git svn init "$svnrepo" -t tags -T trunk -b branches &&
 	git svn fetch &&
-	git checkout --track -b svn remotes/trunk &&
+	git checkout -b svn remotes/origin/trunk &&
 	git checkout -b merge &&
 	echo new file > new_file &&
 	git add new_file &&
@@ -62,15 +60,16 @@ test_expect_success 'setup git mirror and merge' '
 	echo friend > README &&
 	cat tmp >> README &&
 	git commit -a -m "friend" &&
-	git pull . merge
+	git merge merge
 	'
 
 test_debug 'gitk --all & sleep 1'
 
 test_expect_success 'verify pre-merge ancestry' "
-	test x\`git rev-parse --verify refs/heads/svn^2\` = \
-	     x\`git rev-parse --verify refs/heads/merge\` &&
-	git cat-file commit refs/heads/svn^ | grep '^friend$'
+	test x\$(git rev-parse --verify refs/heads/svn^2) = \
+	     x\$(git rev-parse --verify refs/heads/merge) &&
+	git cat-file commit refs/heads/svn^ >actual &&
+	grep '^friend$' actual
 	"
 
 test_expect_success 'git svn dcommit merges' "
@@ -80,16 +79,17 @@ test_expect_success 'git svn dcommit merges' "
 test_debug 'gitk --all & sleep 1'
 
 test_expect_success 'verify post-merge ancestry' "
-	test x\`git rev-parse --verify refs/heads/svn\` = \
-	     x\`git rev-parse --verify refs/remotes/trunk \` &&
-	test x\`git rev-parse --verify refs/heads/svn^2\` = \
-	     x\`git rev-parse --verify refs/heads/merge\` &&
-	git cat-file commit refs/heads/svn^ | grep '^friend$'
+	test x\$(git rev-parse --verify refs/heads/svn) = \
+	     x\$(git rev-parse --verify refs/remotes/origin/trunk) &&
+	test x\$(git rev-parse --verify refs/heads/svn^2) = \
+	     x\$(git rev-parse --verify refs/heads/merge) &&
+	git cat-file commit refs/heads/svn^ >actual &&
+	grep '^friend$' actual
 	"
 
 test_expect_success 'verify merge commit message' "
-	git rev-list --pretty=raw -1 refs/heads/svn | \
-	  grep \"    Merge branch 'merge' into svn\"
+	git rev-list --pretty=raw -1 refs/heads/svn >actual &&
+	grep \"    Merge branch 'merge' into svn\" actual
 	"
 
 test_done

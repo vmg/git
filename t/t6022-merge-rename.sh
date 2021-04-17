@@ -8,94 +8,94 @@ modify () {
 	mv "$2.x" "$2"
 }
 
-test_expect_success setup \
+test_expect_success 'setup' '
+	cat >A <<-\EOF &&
+	a aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+	b bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+	c cccccccccccccccccccccccccccccccccccccccccccccccc
+	d dddddddddddddddddddddddddddddddddddddddddddddddd
+	e eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+	f ffffffffffffffffffffffffffffffffffffffffffffffff
+	g gggggggggggggggggggggggggggggggggggggggggggggggg
+	h hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh
+	i iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii
+	j jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj
+	k kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk
+	l llllllllllllllllllllllllllllllllllllllllllllllll
+	m mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm
+	n nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+	o oooooooooooooooooooooooooooooooooooooooooooooooo
+	EOF
+
+	cat >M <<-\EOF &&
+	A AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+	B BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB
+	C CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC
+	D DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD
+	E EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE
+	F FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
+	G GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG
+	H HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH
+	I IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII
+	J JJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJ
+	K KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK
+	L LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL
+	M MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM
+	N NNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNN
+	O OOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO
+	EOF
+
+	git add A M &&
+	git commit -m "initial has A and M" &&
+	git branch white &&
+	git branch red &&
+	git branch blue &&
+	git branch yellow &&
+	git branch change &&
+	git branch change+rename &&
+
+	sed -e "/^g /s/.*/g : master changes a line/" <A >A+ &&
+	mv A+ A &&
+	git commit -a -m "master updates A" &&
+
+	git checkout yellow &&
+	rm -f M &&
+	git commit -a -m "yellow removes M" &&
+
+	git checkout white &&
+	sed -e "/^g /s/.*/g : white changes a line/" <A >B &&
+	sed -e "/^G /s/.*/G : colored branch changes a line/" <M >N &&
+	rm -f A M &&
+	git update-index --add --remove A B M N &&
+	git commit -m "white renames A->B, M->N" &&
+
+	git checkout red &&
+	sed -e "/^g /s/.*/g : red changes a line/" <A >B &&
+	sed -e "/^G /s/.*/G : colored branch changes a line/" <M >N &&
+	rm -f A M &&
+	git update-index --add --remove A B M N &&
+	git commit -m "red renames A->B, M->N" &&
+
+	git checkout blue &&
+	sed -e "/^g /s/.*/g : blue changes a line/" <A >C &&
+	sed -e "/^G /s/.*/G : colored branch changes a line/" <M >N &&
+	rm -f A M &&
+	git update-index --add --remove A C M N &&
+	git commit -m "blue renames A->C, M->N" &&
+
+	git checkout change &&
+	sed -e "/^g /s/.*/g : changed line/" <A >A+ &&
+	mv A+ A &&
+	git commit -q -a -m "changed" &&
+
+	git checkout change+rename &&
+	sed -e "/^g /s/.*/g : changed line/" <A >B &&
+	rm A &&
+	git update-index --add B &&
+	git commit -q -a -m "changed and renamed" &&
+
+	git checkout master
 '
-cat >A <<\EOF &&
-a aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-b bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-c cccccccccccccccccccccccccccccccccccccccccccccccc
-d dddddddddddddddddddddddddddddddddddddddddddddddd
-e eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
-f ffffffffffffffffffffffffffffffffffffffffffffffff
-g gggggggggggggggggggggggggggggggggggggggggggggggg
-h hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh
-i iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii
-j jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj
-k kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk
-l llllllllllllllllllllllllllllllllllllllllllllllll
-m mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm
-n nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-o oooooooooooooooooooooooooooooooooooooooooooooooo
-EOF
-
-cat >M <<\EOF &&
-A AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
-B BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB
-C CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC
-D DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD
-E EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE
-F FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
-G GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG
-H HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH
-I IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII
-J JJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJ
-K KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK
-L LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL
-M MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM
-N NNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNN
-O OOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO
-EOF
-
-git add A M &&
-git commit -m "initial has A and M" &&
-git branch white &&
-git branch red &&
-git branch blue &&
-git branch yellow &&
-git branch change &&
-git branch change+rename &&
-
-sed -e "/^g /s/.*/g : master changes a line/" <A >A+ &&
-mv A+ A &&
-git commit -a -m "master updates A" &&
-
-git checkout yellow &&
-rm -f M &&
-git commit -a -m "yellow removes M" &&
-
-git checkout white &&
-sed -e "/^g /s/.*/g : white changes a line/" <A >B &&
-sed -e "/^G /s/.*/G : colored branch changes a line/" <M >N &&
-rm -f A M &&
-git update-index --add --remove A B M N &&
-git commit -m "white renames A->B, M->N" &&
-
-git checkout red &&
-sed -e "/^g /s/.*/g : red changes a line/" <A >B &&
-sed -e "/^G /s/.*/G : colored branch changes a line/" <M >N &&
-rm -f A M &&
-git update-index --add --remove A B M N &&
-git commit -m "red renames A->B, M->N" &&
-
-git checkout blue &&
-sed -e "/^g /s/.*/g : blue changes a line/" <A >C &&
-sed -e "/^G /s/.*/G : colored branch changes a line/" <M >N &&
-rm -f A M &&
-git update-index --add --remove A C M N &&
-git commit -m "blue renames A->C, M->N" &&
-
-git checkout change &&
-sed -e "/^g /s/.*/g : changed line/" <A >A+ &&
-mv A+ A &&
-git commit -q -a -m "changed" &&
-
-git checkout change+rename &&
-sed -e "/^g /s/.*/g : changed line/" <A >B &&
-rm A &&
-git update-index --add B &&
-git commit -q -a -m "changed and renamed" &&
-
-git checkout master'
 
 test_expect_success 'pull renaming branch into unrenaming one' \
 '
@@ -242,10 +242,24 @@ test_expect_success 'merge of identical changes in a renamed file' '
 	rm -f A M N &&
 	git reset --hard &&
 	git checkout change+rename &&
-	GIT_MERGE_VERBOSITY=3 git merge change | test_i18ngrep "^Skipped B" &&
+
+	test-tool chmtime --get -3600 B >old-mtime &&
+	GIT_MERGE_VERBOSITY=3 git merge change >out &&
+
+	test-tool chmtime --get B >new-mtime &&
+	test_cmp old-mtime new-mtime &&
+
 	git reset --hard HEAD^ &&
 	git checkout change &&
-	GIT_MERGE_VERBOSITY=3 git merge change+rename | test_i18ngrep "^Skipped B"
+
+	# A will be renamed to B; we check mtimes and file presence
+	test_path_is_missing B &&
+	test-tool chmtime --get -3600 A >old-mtime &&
+	GIT_MERGE_VERBOSITY=3 git merge change+rename >out &&
+
+	test_path_is_missing A &&
+	test-tool chmtime --get B >new-mtime &&
+	test $(cat old-mtime) -lt $(cat new-mtime)
 '
 
 test_expect_success 'setup for rename + d/f conflicts' '
@@ -259,7 +273,7 @@ test_expect_success 'setup for rename + d/f conflicts' '
 	printf "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n" >sub/file &&
 	echo foo >dir/file-in-the-way &&
 	git add -A &&
-	git commit -m "Common commmit" &&
+	git commit -m "Common commit" &&
 
 	echo 11 >>sub/file &&
 	echo more >>dir/file-in-the-way &&
@@ -286,14 +300,15 @@ test_expect_success 'setup for rename + d/f conflicts' '
 	git commit -m "Conflicting change"
 '
 
-printf "1\n2\n3\n4\n5555\n6\n7\n8\n9\n10\n11\n" >expected
-
 test_expect_success 'Rename+D/F conflict; renamed file merges + dir not in way' '
 	git reset --hard &&
 	git checkout -q renamed-file-has-no-conflicts^0 &&
+
 	git merge --strategy=recursive dir-not-in-way &&
+
 	git diff --quiet &&
-	test -f dir &&
+	test_path_is_file dir &&
+	test_write_lines 1 2 3 4 5555 6 7 8 9 10 11 >expected &&
 	test_cmp expected dir
 '
 
@@ -313,8 +328,8 @@ test_expect_success 'Rename+D/F conflict; renamed file merges but dir in way' '
 	test_must_fail git diff --quiet &&
 	test_must_fail git diff --cached --quiet &&
 
-	test -f dir/file-in-the-way &&
-	test -f dir~HEAD &&
+	test_path_is_file dir/file-in-the-way &&
+	test_path_is_file dir~HEAD &&
 	test_cmp expected dir~HEAD
 '
 
@@ -335,28 +350,10 @@ test_expect_success 'Same as previous, but merged other way' '
 	test_must_fail git diff --quiet &&
 	test_must_fail git diff --cached --quiet &&
 
-	test -f dir/file-in-the-way &&
-	test -f dir~renamed-file-has-no-conflicts &&
+	test_path_is_file dir/file-in-the-way &&
+	test_path_is_file dir~renamed-file-has-no-conflicts &&
 	test_cmp expected dir~renamed-file-has-no-conflicts
 '
-
-cat >expected <<\EOF &&
-1
-2
-3
-4
-5
-6
-7
-8
-9
-10
-<<<<<<< HEAD:dir
-12
-=======
-11
->>>>>>> dir-not-in-way:sub/file
-EOF
 
 test_expect_success 'Rename+D/F conflict; renamed file cannot merge, dir not in way' '
 	git reset --hard &&
@@ -370,7 +367,24 @@ test_expect_success 'Rename+D/F conflict; renamed file cannot merge, dir not in 
 	test_must_fail git diff --quiet &&
 	test_must_fail git diff --cached --quiet &&
 
-	test -f dir &&
+	test_path_is_file dir &&
+	cat >expected <<-\EOF &&
+	1
+	2
+	3
+	4
+	5
+	6
+	7
+	8
+	9
+	10
+	<<<<<<< HEAD:dir
+	12
+	=======
+	11
+	>>>>>>> dir-not-in-way:sub/file
+	EOF
 	test_cmp expected dir
 '
 
@@ -389,28 +403,10 @@ test_expect_success 'Rename+D/F conflict; renamed file cannot merge and dir in t
 	test_must_fail git diff --quiet &&
 	test_must_fail git diff --cached --quiet &&
 
-	test -f dir/file-in-the-way &&
-	test -f dir~HEAD &&
+	test_path_is_file dir/file-in-the-way &&
+	test_path_is_file dir~HEAD &&
 	test_cmp expected dir~HEAD
 '
-
-cat >expected <<\EOF &&
-1
-2
-3
-4
-5
-6
-7
-8
-9
-10
-<<<<<<< HEAD:sub/file
-11
-=======
-12
->>>>>>> renamed-file-has-conflicts:dir
-EOF
 
 test_expect_success 'Same as previous, but merged other way' '
 	git reset --hard &&
@@ -425,8 +421,25 @@ test_expect_success 'Same as previous, but merged other way' '
 	test_must_fail git diff --quiet &&
 	test_must_fail git diff --cached --quiet &&
 
-	test -f dir/file-in-the-way &&
-	test -f dir~renamed-file-has-conflicts &&
+	test_path_is_file dir/file-in-the-way &&
+	test_path_is_file dir~renamed-file-has-conflicts &&
+	cat >expected <<-\EOF &&
+	1
+	2
+	3
+	4
+	5
+	6
+	7
+	8
+	9
+	10
+	<<<<<<< HEAD:sub/file
+	11
+	=======
+	12
+	>>>>>>> renamed-file-has-conflicts:dir
+	EOF
 	test_cmp expected dir~renamed-file-has-conflicts
 '
 
@@ -439,7 +452,7 @@ test_expect_success 'setup both rename source and destination involved in D/F co
 	mkdir one &&
 	echo stuff >one/file &&
 	git add -A &&
-	git commit -m "Common commmit" &&
+	git commit -m "Common commit" &&
 
 	git mv one/file destdir &&
 	git commit -m "Renamed to destdir" &&
@@ -462,9 +475,9 @@ test_expect_success 'both rename source and destination involved in D/F conflict
 
 	test_must_fail git diff --quiet &&
 
-	test -f destdir/foo &&
-	test -f one &&
-	test -f destdir~HEAD &&
+	test_path_is_file destdir/foo &&
+	test_path_is_file one &&
+	test_path_is_file destdir~HEAD &&
 	test "stuff" = "$(cat destdir~HEAD)"
 '
 
@@ -479,7 +492,7 @@ test_expect_success 'setup pair rename to parent of other (D/F conflicts)' '
 	echo stuff >one/file &&
 	echo other >two/file &&
 	git add -A &&
-	git commit -m "Common commmit" &&
+	git commit -m "Common commit" &&
 
 	git rm -rf one &&
 	git mv two/file one &&
@@ -505,9 +518,9 @@ test_expect_success 'pair rename to parent of other (D/F conflicts) w/ untracked
 
 	test 4 -eq $(find . | grep -v .git | wc -l) &&
 
-	test -d one &&
-	test -f one~rename-two &&
-	test -f two &&
+	test_path_is_dir one &&
+	test_path_is_file one~rename-two &&
+	test_path_is_file two &&
 	test "other" = $(cat one~rename-two) &&
 	test "stuff" = $(cat two)
 '
@@ -525,8 +538,8 @@ test_expect_success 'pair rename to parent of other (D/F conflicts) w/ clean sta
 
 	test 3 -eq $(find . | grep -v .git | wc -l) &&
 
-	test -f one &&
-	test -f two &&
+	test_path_is_file one &&
+	test_path_is_file two &&
 	test "other" = $(cat one) &&
 	test "stuff" = $(cat two)
 '
@@ -539,7 +552,7 @@ test_expect_success 'setup rename of one file to two, with directories in the wa
 
 	echo stuff >original &&
 	git add -A &&
-	git commit -m "Common commmit" &&
+	git commit -m "Common commit" &&
 
 	mkdir two &&
 	>two/file &&
@@ -566,11 +579,11 @@ test_expect_success 'check handling of differently renamed file with D/F conflic
 	test 1 -eq "$(git ls-files -u original | wc -l)" &&
 	test 2 -eq "$(git ls-files -o | wc -l)" &&
 
-	test -f one/file &&
-	test -f two/file &&
-	test -f one~HEAD &&
-	test -f two~second-rename &&
-	! test -f original
+	test_path_is_file one/file &&
+	test_path_is_file two/file &&
+	test_path_is_file one~HEAD &&
+	test_path_is_file two~second-rename &&
+	test_path_is_missing original
 '
 
 test_expect_success 'setup rename one file to two; directories moving out of the way' '
@@ -583,7 +596,7 @@ test_expect_success 'setup rename one file to two; directories moving out of the
 	mkdir one two &&
 	touch one/file two/file &&
 	git add -A &&
-	git commit -m "Common commmit" &&
+	git commit -m "Common commit" &&
 
 	git rm -rf one &&
 	git mv original one &&
@@ -605,9 +618,9 @@ test_expect_success 'check handling of differently renamed file with D/F conflic
 	test 1 -eq "$(git ls-files -u original | wc -l)" &&
 	test 0 -eq "$(git ls-files -o | wc -l)" &&
 
-	test -f one &&
-	test -f two &&
-	! test -f original
+	test_path_is_file one &&
+	test_path_is_file two &&
+	test_path_is_missing original
 '
 
 test_expect_success 'setup avoid unnecessary update, normal rename' '
@@ -618,7 +631,7 @@ test_expect_success 'setup avoid unnecessary update, normal rename' '
 
 	printf "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n" >original &&
 	git add -A &&
-	git commit -m "Common commmit" &&
+	git commit -m "Common commit" &&
 
 	git mv original rename &&
 	echo 11 >>rename &&
@@ -633,10 +646,9 @@ test_expect_success 'setup avoid unnecessary update, normal rename' '
 
 test_expect_success 'avoid unnecessary update, normal rename' '
 	git checkout -q avoid-unnecessary-update-1^0 &&
-	test-chmtime =1000000000 rename &&
-	test-chmtime -v +0 rename >expect &&
+	test-tool chmtime --get -3600 rename >expect &&
 	git merge merge-branch-1 &&
-	test-chmtime -v +0 rename >actual &&
+	test-tool chmtime --get rename >actual &&
 	test_cmp expect actual # "rename" should have stayed intact
 '
 
@@ -649,7 +661,7 @@ test_expect_success 'setup to test avoiding unnecessary update, with D/F conflic
 	mkdir df &&
 	printf "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n" >df/file &&
 	git add -A &&
-	git commit -m "Common commmit" &&
+	git commit -m "Common commit" &&
 
 	git mv df/file temp &&
 	rm -rf df &&
@@ -666,10 +678,9 @@ test_expect_success 'setup to test avoiding unnecessary update, with D/F conflic
 
 test_expect_success 'avoid unnecessary update, with D/F conflict' '
 	git checkout -q avoid-unnecessary-update-2^0 &&
-	test-chmtime =1000000000 df &&
-	test-chmtime -v +0 df >expect &&
+	test-tool chmtime --get -3600 df >expect &&
 	git merge merge-branch-2 &&
-	test-chmtime -v +0 df >actual &&
+	test-tool chmtime --get df >actual &&
 	test_cmp expect actual # "df" should have stayed intact
 '
 
@@ -685,7 +696,7 @@ test_expect_success 'setup avoid unnecessary update, dir->(file,nothing)' '
 	git add -A &&
 	git commit -mA &&
 
-	git checkout -b side
+	git checkout -b side &&
 	git rm -rf df &&
 	git commit -mB &&
 
@@ -698,10 +709,9 @@ test_expect_success 'setup avoid unnecessary update, dir->(file,nothing)' '
 
 test_expect_success 'avoid unnecessary update, dir->(file,nothing)' '
 	git checkout -q master^0 &&
-	test-chmtime =1000000000 df &&
-	test-chmtime -v +0 df >expect &&
+	test-tool chmtime --get -3600 df >expect &&
 	git merge side &&
-	test-chmtime -v +0 df >actual &&
+	test-tool chmtime --get df >actual &&
 	test_cmp expect actual # "df" should have stayed intact
 '
 
@@ -716,7 +726,7 @@ test_expect_success 'setup avoid unnecessary update, modify/delete' '
 	git add -A &&
 	git commit -mA &&
 
-	git checkout -b side
+	git checkout -b side &&
 	git rm -f file &&
 	git commit -m "Delete file" &&
 
@@ -728,10 +738,9 @@ test_expect_success 'setup avoid unnecessary update, modify/delete' '
 
 test_expect_success 'avoid unnecessary update, modify/delete' '
 	git checkout -q master^0 &&
-	test-chmtime =1000000000 file &&
-	test-chmtime -v +0 file >expect &&
+	test-tool chmtime --get -3600 file >expect &&
 	test_must_fail git merge side &&
-	test-chmtime -v +0 file >actual &&
+	test-tool chmtime --get file >actual &&
 	test_cmp expect actual # "file" should have stayed intact
 '
 
@@ -745,7 +754,7 @@ test_expect_success 'setup avoid unnecessary update, rename/add-dest' '
 	git add -A &&
 	git commit -mA &&
 
-	git checkout -b side
+	git checkout -b side &&
 	cp file newfile &&
 	git add -A &&
 	git commit -m "Add file copy" &&
@@ -757,10 +766,9 @@ test_expect_success 'setup avoid unnecessary update, rename/add-dest' '
 
 test_expect_success 'avoid unnecessary update, rename/add-dest' '
 	git checkout -q master^0 &&
-	test-chmtime =1000000000 newfile &&
-	test-chmtime -v +0 newfile >expect &&
+	test-tool chmtime --get -3600 newfile >expect &&
 	git merge side &&
-	test-chmtime -v +0 newfile >actual &&
+	test-tool chmtime --get newfile >actual &&
 	test_cmp expect actual # "file" should have stayed intact
 '
 
@@ -813,48 +821,48 @@ test_expect_success 'setup for use of extended merge markers' '
 	git commit -mC
 '
 
-cat >expected <<\EOF &&
-1
-2
-3
-4
-5
-6
-7
-8
-<<<<<<< HEAD:renamed_file
-9
-=======
-8.5
->>>>>>> master^0:original_file
-EOF
-
 test_expect_success 'merge master into rename has correct extended markers' '
 	git checkout rename^0 &&
 	test_must_fail git merge -s recursive master^0 &&
+
+	cat >expected <<-\EOF &&
+	1
+	2
+	3
+	4
+	5
+	6
+	7
+	8
+	<<<<<<< HEAD:renamed_file
+	9
+	=======
+	8.5
+	>>>>>>> master^0:original_file
+	EOF
 	test_cmp expected renamed_file
 '
-
-cat >expected <<\EOF &&
-1
-2
-3
-4
-5
-6
-7
-8
-<<<<<<< HEAD:original_file
-8.5
-=======
-9
->>>>>>> rename^0:renamed_file
-EOF
 
 test_expect_success 'merge rename into master has correct extended markers' '
 	git reset --hard &&
 	git checkout master^0 &&
 	test_must_fail git merge -s recursive rename^0 &&
+
+	cat >expected <<-\EOF &&
+	1
+	2
+	3
+	4
+	5
+	6
+	7
+	8
+	<<<<<<< HEAD:original_file
+	8.5
+	=======
+	9
+	>>>>>>> rename^0:renamed_file
+	EOF
 	test_cmp expected renamed_file
 '
 
@@ -896,8 +904,7 @@ test_expect_success 'do not follow renames for empty files' '
 	git mv empty1 empty2 &&
 	git commit -m rename &&
 	test_must_fail git merge empty-base &&
-	>expect &&
-	test_cmp expect empty2
+	test_must_be_empty empty2
 '
 
 test_done

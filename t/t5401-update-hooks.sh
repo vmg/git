@@ -82,13 +82,13 @@ test_expect_success 'hooks ran' '
 '
 
 test_expect_success 'pre-receive hook input' '
-	(echo $commit0 $commit1 refs/heads/master;
+	(echo $commit0 $commit1 refs/heads/master &&
 	 echo $commit1 $commit0 refs/heads/tofail
 	) | test_cmp - victim.git/pre-receive.stdin
 '
 
 test_expect_success 'update hook arguments' '
-	(echo refs/heads/master $commit0 $commit1;
+	(echo refs/heads/master $commit0 $commit1 &&
 	 echo refs/heads/tofail $commit1 $commit0
 	) | test_cmp - victim.git/update.args
 '
@@ -104,17 +104,17 @@ test_expect_success 'post-update hook arguments' '
 '
 
 test_expect_success 'all hook stdin is /dev/null' '
-	! test -s victim.git/update.stdin &&
-	! test -s victim.git/post-update.stdin
+	test_must_be_empty victim.git/update.stdin &&
+	test_must_be_empty victim.git/post-update.stdin
 '
 
 test_expect_success 'all *-receive hook args are empty' '
-	! test -s victim.git/pre-receive.args &&
-	! test -s victim.git/post-receive.args
+	test_must_be_empty victim.git/pre-receive.args &&
+	test_must_be_empty victim.git/post-receive.args
 '
 
 test_expect_success 'send-pack produced no output' '
-	! test -s send.out
+	test_must_be_empty send.out
 '
 
 cat <<EOF >expect
@@ -133,6 +133,19 @@ EOF
 test_expect_success 'send-pack stderr contains hook messages' '
 	grep ^remote: send.err | sed "s/ *\$//" >actual &&
 	test_cmp expect actual
+'
+
+test_expect_success 'pre-receive hook that forgets to read its input' '
+	write_script victim.git/hooks/pre-receive <<-\EOF &&
+	exit 0
+	EOF
+	rm -f victim.git/hooks/update victim.git/hooks/post-update &&
+
+	for v in $(test_seq 100 999)
+	do
+		git branch branch_$v master || return
+	done &&
+	git push ./victim.git "+refs/heads/*:refs/heads/*"
 '
 
 test_done

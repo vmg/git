@@ -12,9 +12,8 @@ test_expect_success 'clone using git svn' 'git svn clone -s "$svnrepo" x'
 test_expect_success 'test that b1 exists and is empty' '
 	(
 		cd x &&
-		git reset --hard branch-c &&
-		test -f b1 &&
-		! test -s b1
+		git reset --hard origin/branch-c &&
+		test_must_be_empty b1
 	)
 	'
 

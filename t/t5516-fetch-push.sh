@@ -11,11 +11,12 @@ This test checks the following functionality:
 * hooks
 * --porcelain output format
 * hiderefs
+* reflogs
 '
 
 . ./test-lib.sh
 
-D=`pwd`
+D=$(pwd)
 
 mk_empty () {
 	repo_name="$1"
@@ -93,6 +94,9 @@ mk_child() {
 }
 
 check_push_result () {
+	test $# -ge 3 ||
+	BUG "check_push_result requires at least 3 parameters"
+
 	repo_name="$1"
 	shift
 
@@ -237,7 +241,7 @@ test_expect_success 'push with pushInsteadOf' '
 test_expect_success 'push with pushInsteadOf and explicit pushurl (pushInsteadOf should not rewrite)' '
 	mk_empty testrepo &&
 	test_config "url.trash2/.pushInsteadOf" testrepo/ &&
-	test_config "url.trash3/.pusnInsteadOf" trash/wrong &&
+	test_config "url.trash3/.pushInsteadOf" trash/wrong &&
 	test_config remote.r.url trash/wrong &&
 	test_config remote.r.pushurl "testrepo/" &&
 	git push r refs/heads/master:refs/remotes/origin/master &&
@@ -421,7 +425,7 @@ test_expect_success 'push tag with non-existent, incomplete dest' '
 test_expect_success 'push sha1 with non-existent, incomplete dest' '
 
 	mk_test testrepo &&
-	test_must_fail git push testrepo `git rev-parse master`:foo
+	test_must_fail git push testrepo $(git rev-parse master):foo
 
 '
 
@@ -536,13 +540,23 @@ test_expect_success 'push with config branch.*.pushremote' '
 	check_push_result down_repo $the_commit heads/master
 '
 
+test_expect_success 'branch.*.pushremote config order is irrelevant' '
+	mk_test one_repo heads/master &&
+	mk_test two_repo heads/master &&
+	test_config remote.one.url one_repo &&
+	test_config remote.two.url two_repo &&
+	test_config branch.master.pushremote two_repo &&
+	test_config remote.pushdefault one_repo &&
+	test_config push.default matching &&
+	git push &&
+	check_push_result one_repo $the_first_commit heads/master &&
+	check_push_result two_repo $the_commit heads/master
+'
+
 test_expect_success 'push with dry-run' '
 
 	mk_test testrepo heads/master &&
-	(
-		cd testrepo &&
-		old_commit=$(git show-ref -s --verify refs/heads/master)
-	) &&
+	old_commit=$(git -C testrepo show-ref -s --verify refs/heads/master) &&
 	git push --dry-run testrepo : &&
 	check_push_result testrepo $old_commit heads/master
 '
@@ -598,7 +612,7 @@ test_expect_success 'push does not update local refs on failure' '
 	chmod +x testrepo/.git/hooks/pre-receive &&
 	(
 		cd child &&
-		git pull .. master
+		git pull .. master &&
 		test_must_fail git push &&
 		test $(git rev-parse master) != \
 			$(git rev-parse remotes/origin/master)
@@ -620,7 +634,7 @@ test_expect_success 'pushing valid refs triggers post-receive and post-update ho
 	orgmaster=$(cd testrepo && git show-ref -s --verify refs/heads/master) &&
 	newmaster=$(git show-ref -s --verify refs/heads/master) &&
 	orgnext=$(cd testrepo && git show-ref -s --verify refs/heads/next) &&
-	newnext=$_z40 &&
+	newnext=$ZERO_OID &&
 	git push testrepo refs/heads/master:refs/heads/master :refs/heads/next &&
 	(
 		cd testrepo/.git &&
@@ -658,15 +672,15 @@ test_expect_success 'deleting dangling ref triggers hooks with correct args' '
 	(
 		cd testrepo/.git &&
 		cat >pre-receive.expect <<-EOF &&
-		$_z40 $_z40 refs/heads/master
+		$ZERO_OID $ZERO_OID refs/heads/master
 		EOF
 
 		cat >update.expect <<-EOF &&
-		refs/heads/master $_z40 $_z40
+		refs/heads/master $ZERO_OID $ZERO_OID
 		EOF
 
 		cat >post-receive.expect <<-EOF &&
-		$_z40 $_z40 refs/heads/master
+		$ZERO_OID $ZERO_OID refs/heads/master
 		EOF
 
 		cat >post-update.expect <<-EOF &&
@@ -689,12 +703,12 @@ test_expect_success 'deletion of a non-existent ref is not fed to post-receive a
 		cd testrepo/.git &&
 		cat >pre-receive.expect <<-EOF &&
 		$orgmaster $newmaster refs/heads/master
-		$_z40 $_z40 refs/heads/nonexistent
+		$ZERO_OID $ZERO_OID refs/heads/nonexistent
 		EOF
 
 		cat >update.expect <<-EOF &&
 		refs/heads/master $orgmaster $newmaster
-		refs/heads/nonexistent $_z40 $_z40
+		refs/heads/nonexistent $ZERO_OID $ZERO_OID
 		EOF
 
 		cat >post-receive.expect <<-EOF &&
@@ -718,11 +732,11 @@ test_expect_success 'deletion of a non-existent ref alone does trigger post-rece
 	(
 		cd testrepo/.git &&
 		cat >pre-receive.expect <<-EOF &&
-		$_z40 $_z40 refs/heads/nonexistent
+		$ZERO_OID $ZERO_OID refs/heads/nonexistent
 		EOF
 
 		cat >update.expect <<-EOF &&
-		refs/heads/nonexistent $_z40 $_z40
+		refs/heads/nonexistent $ZERO_OID $ZERO_OID
 		EOF
 
 		test_cmp pre-receive.expect pre-receive.actual &&
@@ -737,7 +751,7 @@ test_expect_success 'mixed ref updates, deletes, invalid deletes trigger hooks w
 	orgmaster=$(cd testrepo && git show-ref -s --verify refs/heads/master) &&
 	newmaster=$(git show-ref -s --verify refs/heads/master) &&
 	orgnext=$(cd testrepo && git show-ref -s --verify refs/heads/next) &&
-	newnext=$_z40 &&
+	newnext=$ZERO_OID &&
 	orgpu=$(cd testrepo && git show-ref -s --verify refs/heads/pu) &&
 	newpu=$(git show-ref -s --verify refs/heads/master) &&
 	git push testrepo refs/heads/master:refs/heads/master \
@@ -749,14 +763,14 @@ test_expect_success 'mixed ref updates, deletes, invalid deletes trigger hooks w
 		$orgmaster $newmaster refs/heads/master
 		$orgnext $newnext refs/heads/next
 		$orgpu $newpu refs/heads/pu
-		$_z40 $_z40 refs/heads/nonexistent
+		$ZERO_OID $ZERO_OID refs/heads/nonexistent
 		EOF
 
 		cat >update.expect <<-EOF &&
 		refs/heads/master $orgmaster $newmaster
 		refs/heads/next $orgnext $newnext
 		refs/heads/pu $orgpu $newpu
-		refs/heads/nonexistent $_z40 $_z40
+		refs/heads/nonexistent $ZERO_OID $ZERO_OID
 		EOF
 
 		cat >post-receive.expect <<-EOF &&
@@ -909,7 +923,7 @@ test_expect_success 'push into aliased refs (consistent)' '
 	(
 		cd child1 &&
 		git branch foo &&
-		git symbolic-ref refs/heads/bar refs/heads/foo
+		git symbolic-ref refs/heads/bar refs/heads/foo &&
 		git config receive.denyCurrentBranch false
 	) &&
 	(
@@ -931,7 +945,7 @@ test_expect_success 'push into aliased refs (inconsistent)' '
 	(
 		cd child1 &&
 		git branch foo &&
-		git symbolic-ref refs/heads/bar refs/heads/foo
+		git symbolic-ref refs/heads/bar refs/heads/foo &&
 		git config receive.denyCurrentBranch false
 	) &&
 	(
@@ -951,26 +965,76 @@ test_expect_success 'push into aliased refs (inconsistent)' '
 	)
 '
 
-test_expect_success 'push requires --force to update lightweight tag' '
-	mk_test testrepo heads/master &&
-	mk_child testrepo child1 &&
-	mk_child testrepo child2 &&
-	(
-		cd child1 &&
-		git tag Tag &&
-		git push ../child2 Tag &&
-		git push ../child2 Tag &&
-		>file1 &&
-		git add file1 &&
-		git commit -m "file1" &&
-		git tag -f Tag &&
-		test_must_fail git push ../child2 Tag &&
-		git push --force ../child2 Tag &&
-		git tag -f Tag &&
-		test_must_fail git push ../child2 Tag HEAD~ &&
-		git push --force ../child2 Tag
-	)
-'
+test_force_push_tag () {
+	tag_type_description=$1
+	tag_args=$2
+
+	test_expect_success "force pushing required to update $tag_type_description" "
+		mk_test testrepo heads/master &&
+		mk_child testrepo child1 &&
+		mk_child testrepo child2 &&
+		(
+			cd child1 &&
+			git tag testTag &&
+			git push ../child2 testTag &&
+			>file1 &&
+			git add file1 &&
+			git commit -m 'file1' &&
+			git tag $tag_args testTag &&
+			test_must_fail git push ../child2 testTag &&
+			git push --force ../child2 testTag &&
+			git tag $tag_args testTag HEAD~ &&
+			test_must_fail git push ../child2 testTag &&
+			git push --force ../child2 testTag &&
+
+			# Clobbering without + in refspec needs --force
+			git tag -f testTag &&
+			test_must_fail git push ../child2 'refs/tags/*:refs/tags/*' &&
+			git push --force ../child2 'refs/tags/*:refs/tags/*' &&
+
+			# Clobbering with + in refspec does not need --force
+			git tag -f testTag HEAD~ &&
+			git push ../child2 '+refs/tags/*:refs/tags/*' &&
+
+			# Clobbering with --no-force still obeys + in refspec
+			git tag -f testTag &&
+			git push --no-force ../child2 '+refs/tags/*:refs/tags/*' &&
+
+			# Clobbering with/without --force and 'tag <name>' format
+			git tag -f testTag HEAD~ &&
+			test_must_fail git push ../child2 tag testTag &&
+			git push --force ../child2 tag testTag
+		)
+	"
+}
+
+test_force_push_tag "lightweight tag" "-f"
+test_force_push_tag "annotated tag" "-f -a -m'tag message'"
+
+test_force_fetch_tag () {
+	tag_type_description=$1
+	tag_args=$2
+
+	test_expect_success "fetch will not clobber an existing $tag_type_description without --force" "
+		mk_test testrepo heads/master &&
+		mk_child testrepo child1 &&
+		mk_child testrepo child2 &&
+		(
+			cd testrepo &&
+			git tag testTag &&
+			git -C ../child1 fetch origin tag testTag &&
+			>file1 &&
+			git add file1 &&
+			git commit -m 'file1' &&
+			git tag $tag_args testTag &&
+			test_must_fail git -C ../child1 fetch origin tag testTag &&
+			git -C ../child1 fetch origin '+refs/tags/*:refs/tags/*'
+		)
+	"
+}
+
+test_force_fetch_tag "lightweight tag" "-f"
+test_force_fetch_tag "annotated tag" "-f -a -m'tag message'"
 
 test_expect_success 'push --porcelain' '
 	mk_empty testrepo &&
@@ -990,18 +1054,19 @@ test_expect_success 'push --porcelain' '
 test_expect_success 'push --porcelain bad url' '
 	mk_empty testrepo &&
 	test_must_fail git push >.git/bar --porcelain asdfasdfasd refs/heads/master:refs/remotes/origin/master &&
-	test_must_fail grep -q Done .git/bar
+	! grep -q Done .git/bar
 '
 
 test_expect_success 'push --porcelain rejected' '
 	mk_empty testrepo &&
 	git push testrepo refs/heads/master:refs/remotes/origin/master &&
 	(cd testrepo &&
-		git reset --hard origin/master^
+		git reset --hard origin/master^ &&
 		git config receive.denyCurrentBranch true) &&
 
 	echo >.git/foo  "To testrepo"  &&
 	echo >>.git/foo "!	refs/heads/master:refs/heads/master	[remote rejected] (branch is currently checked out)" &&
+	echo >>.git/foo "Done" &&
 
 	test_must_fail git push >.git/bar --porcelain  testrepo refs/heads/master:refs/heads/master &&
 	test_cmp .git/foo .git/bar
@@ -1011,7 +1076,7 @@ test_expect_success 'push --porcelain --dry-run rejected' '
 	mk_empty testrepo &&
 	git push testrepo refs/heads/master:refs/remotes/origin/master &&
 	(cd testrepo &&
-		git reset --hard origin/master
+		git reset --hard origin/master &&
 		git config receive.denyCurrentBranch true) &&
 
 	echo >.git/foo  "To testrepo"  &&
@@ -1083,8 +1148,13 @@ test_expect_success 'fetch exact SHA1' '
 		git prune &&
 		test_must_fail git cat-file -t $the_commit &&
 
+		# Some protocol versions (e.g. 2) support fetching
+		# unadvertised objects, so restrict this test to v0.
+
 		# fetching the hidden object should fail by default
-		test_must_fail git fetch -v ../testrepo $the_commit:refs/heads/copy &&
+		test_must_fail env GIT_TEST_PROTOCOL_VERSION=0 \
+			git fetch -v ../testrepo $the_commit:refs/heads/copy 2>err &&
+		test_i18ngrep "Server does not allow request for unadvertised object" err &&
 		test_must_fail git rev-parse --verify refs/heads/copy &&
 
 		# the server side can allow it to succeed
@@ -1093,11 +1163,101 @@ test_expect_success 'fetch exact SHA1' '
 			git config uploadpack.allowtipsha1inwant true
 		) &&
 
-		git fetch -v ../testrepo $the_commit:refs/heads/copy &&
-		result=$(git rev-parse --verify refs/heads/copy) &&
-		test "$the_commit" = "$result"
+		git fetch -v ../testrepo $the_commit:refs/heads/copy master:refs/heads/extra &&
+		cat >expect <<-EOF &&
+		$the_commit
+		$the_first_commit
+		EOF
+		{
+			git rev-parse --verify refs/heads/copy &&
+			git rev-parse --verify refs/heads/extra
+		} >actual &&
+		test_cmp expect actual
 	)
 '
+
+test_expect_success 'fetch exact SHA1 in protocol v2' '
+	mk_test testrepo heads/master hidden/one &&
+	git push testrepo master:refs/hidden/one &&
+	git -C testrepo config transfer.hiderefs refs/hidden &&
+	check_push_result testrepo $the_commit hidden/one &&
+
+	mk_child testrepo child &&
+	git -C child config protocol.version 2 &&
+
+	# make sure $the_commit does not exist here
+	git -C child repack -a -d &&
+	git -C child prune &&
+	test_must_fail git -C child cat-file -t $the_commit &&
+
+	# fetching the hidden object succeeds by default
+	# NEEDSWORK: should this match the v0 behavior instead?
+	git -C child fetch -v ../testrepo $the_commit:refs/heads/copy
+'
+
+for configallowtipsha1inwant in true false
+do
+	test_expect_success "shallow fetch reachable SHA1 (but not a ref), allowtipsha1inwant=$configallowtipsha1inwant" '
+		mk_empty testrepo &&
+		(
+			cd testrepo &&
+			git config uploadpack.allowtipsha1inwant $configallowtipsha1inwant &&
+			git commit --allow-empty -m foo &&
+			git commit --allow-empty -m bar
+		) &&
+		SHA1=$(git --git-dir=testrepo/.git rev-parse HEAD^) &&
+		mk_empty shallow &&
+		(
+			cd shallow &&
+			# Some protocol versions (e.g. 2) support fetching
+			# unadvertised objects, so restrict this test to v0.
+			test_must_fail env GIT_TEST_PROTOCOL_VERSION=0 \
+				git fetch --depth=1 ../testrepo/.git $SHA1 &&
+			git --git-dir=../testrepo/.git config uploadpack.allowreachablesha1inwant true &&
+			git fetch --depth=1 ../testrepo/.git $SHA1 &&
+			git cat-file commit $SHA1
+		)
+	'
+
+	test_expect_success "deny fetch unreachable SHA1, allowtipsha1inwant=$configallowtipsha1inwant" '
+		mk_empty testrepo &&
+		(
+			cd testrepo &&
+			git config uploadpack.allowtipsha1inwant $configallowtipsha1inwant &&
+			git commit --allow-empty -m foo &&
+			git commit --allow-empty -m bar &&
+			git commit --allow-empty -m xyz
+		) &&
+		SHA1_1=$(git --git-dir=testrepo/.git rev-parse HEAD^^) &&
+		SHA1_2=$(git --git-dir=testrepo/.git rev-parse HEAD^) &&
+		SHA1_3=$(git --git-dir=testrepo/.git rev-parse HEAD) &&
+		(
+			cd testrepo &&
+			git reset --hard $SHA1_2 &&
+			git cat-file commit $SHA1_1 &&
+			git cat-file commit $SHA1_3
+		) &&
+		mk_empty shallow &&
+		(
+			cd shallow &&
+			# Some protocol versions (e.g. 2) support fetching
+			# unadvertised objects, so restrict this test to v0.
+			test_must_fail env GIT_TEST_PROTOCOL_VERSION=0 \
+				git fetch ../testrepo/.git $SHA1_3 &&
+			test_must_fail env GIT_TEST_PROTOCOL_VERSION=0 \
+				git fetch ../testrepo/.git $SHA1_1 &&
+			git --git-dir=../testrepo/.git config uploadpack.allowreachablesha1inwant true &&
+			git fetch ../testrepo/.git $SHA1_1 &&
+			git cat-file commit $SHA1_1 &&
+			test_must_fail git cat-file commit $SHA1_2 &&
+			git fetch ../testrepo/.git $SHA1_2 &&
+			git cat-file commit $SHA1_2 &&
+			test_must_fail env GIT_TEST_PROTOCOL_VERSION=0 \
+				git fetch ../testrepo/.git $SHA1_3 2>err &&
+			test_i18ngrep "remote error:.*not our ref.*$SHA1_3\$" err
+		)
+	'
+done
 
 test_expect_success 'fetch follows tags by default' '
 	mk_test testrepo heads/master &&
@@ -1126,6 +1286,92 @@ test_expect_success 'fetch follows tags by default' '
 	test_cmp expect actual
 '
 
+test_expect_success 'peeled advertisements are not considered ref tips' '
+	mk_empty testrepo &&
+	git -C testrepo commit --allow-empty -m one &&
+	git -C testrepo commit --allow-empty -m two &&
+	git -C testrepo tag -m foo mytag HEAD^ &&
+	oid=$(git -C testrepo rev-parse mytag^{commit}) &&
+	test_must_fail env GIT_TEST_PROTOCOL_VERSION=0 \
+		git fetch testrepo $oid 2>err &&
+	test_i18ngrep "Server does not allow request for unadvertised object" err
+'
+
+test_expect_success 'pushing a specific ref applies remote.$name.push as refmap' '
+	mk_test testrepo heads/master &&
+	rm -fr src dst &&
+	git init src &&
+	git init --bare dst &&
+	(
+		cd src &&
+		git pull ../testrepo master &&
+		git branch next &&
+		git config remote.dst.url ../dst &&
+		git config remote.dst.push "+refs/heads/*:refs/remotes/src/*" &&
+		git push dst master &&
+		git show-ref refs/heads/master |
+		sed -e "s|refs/heads/|refs/remotes/src/|" >../dst/expect
+	) &&
+	(
+		cd dst &&
+		test_must_fail git show-ref refs/heads/next &&
+		test_must_fail git show-ref refs/heads/master &&
+		git show-ref refs/remotes/src/master >actual
+	) &&
+	test_cmp dst/expect dst/actual
+'
+
+test_expect_success 'with no remote.$name.push, it is not used as refmap' '
+	mk_test testrepo heads/master &&
+	rm -fr src dst &&
+	git init src &&
+	git init --bare dst &&
+	(
+		cd src &&
+		git pull ../testrepo master &&
+		git branch next &&
+		git config remote.dst.url ../dst &&
+		git config push.default matching &&
+		git push dst master &&
+		git show-ref refs/heads/master >../dst/expect
+	) &&
+	(
+		cd dst &&
+		test_must_fail git show-ref refs/heads/next &&
+		git show-ref refs/heads/master >actual
+	) &&
+	test_cmp dst/expect dst/actual
+'
+
+test_expect_success 'with no remote.$name.push, upstream mapping is used' '
+	mk_test testrepo heads/master &&
+	rm -fr src dst &&
+	git init src &&
+	git init --bare dst &&
+	(
+		cd src &&
+		git pull ../testrepo master &&
+		git branch next &&
+		git config remote.dst.url ../dst &&
+		git config remote.dst.fetch "+refs/heads/*:refs/remotes/dst/*" &&
+		git config push.default upstream &&
+
+		git config branch.master.merge refs/heads/trunk &&
+		git config branch.master.remote dst &&
+
+		git push dst master &&
+		git show-ref refs/heads/master |
+		sed -e "s|refs/heads/master|refs/heads/trunk|" >../dst/expect
+	) &&
+	(
+		cd dst &&
+		test_must_fail git show-ref refs/heads/master &&
+		test_must_fail git show-ref refs/heads/next &&
+		git show-ref refs/heads/trunk >actual
+	) &&
+	test_cmp dst/expect dst/actual
+'
+
 test_expect_success 'push does not follow tags by default' '
 	mk_test testrepo heads/master &&
 	rm -fr src dst &&
@@ -1149,7 +1395,7 @@ test_expect_success 'push does not follow tags by default' '
 	test_cmp expect actual
 '
 
-test_expect_success 'push --follow-tag only pushes relevant tags' '
+test_expect_success 'push --follow-tags only pushes relevant tags' '
 	mk_test testrepo heads/master &&
 	rm -fr src dst &&
 	git init src &&
@@ -1162,14 +1408,320 @@ test_expect_success 'push --follow-tag only pushes relevant tags' '
 		git commit --allow-empty -m "future commit" &&
 		git tag -m "future" future &&
 		git checkout master &&
-		git for-each-ref refs/heads/master refs/tags/tag >../expect
-		git push --follow-tag ../dst master
+		git for-each-ref refs/heads/master refs/tags/tag >../expect &&
+		git push --follow-tags ../dst master
 	) &&
 	(
 		cd dst &&
 		git for-each-ref >../actual
 	) &&
 	test_cmp expect actual
+'
+
+test_expect_success 'push --no-thin must produce non-thin pack' '
+	cat >>path1 <<\EOF &&
+keep base version of path1 big enough, compared to the new changes
+later, in order to pass size heuristics in
+builtin/pack-objects.c:try_delta()
+EOF
+	git commit -am initial &&
+	git init no-thin &&
+	git --git-dir=no-thin/.git config receive.unpacklimit 0 &&
+	git push no-thin/.git refs/heads/master:refs/heads/foo &&
+	echo modified >> path1 &&
+	git commit -am modified &&
+	git repack -adf &&
+	rcvpck="git receive-pack --reject-thin-pack-for-testing" &&
+	git push --no-thin --receive-pack="$rcvpck" no-thin/.git refs/heads/master:refs/heads/foo
+'
+
+test_expect_success 'pushing a tag pushes the tagged object' '
+	rm -rf dst.git &&
+	blob=$(echo unreferenced | git hash-object -w --stdin) &&
+	git tag -m foo tag-of-blob $blob &&
+	git init --bare dst.git &&
+	git push dst.git tag-of-blob &&
+	# the receiving index-pack should have noticed
+	# any problems, but we double check
+	echo unreferenced >expect &&
+	git --git-dir=dst.git cat-file blob tag-of-blob >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'push into bare respects core.logallrefupdates' '
+	rm -rf dst.git &&
+	git init --bare dst.git &&
+	git -C dst.git config core.logallrefupdates true &&
+
+	# double push to test both with and without
+	# the actual pack transfer
+	git push dst.git master:one &&
+	echo "one@{0} push" >expect &&
+	git -C dst.git log -g --format="%gd %gs" one >actual &&
+	test_cmp expect actual &&
+
+	git push dst.git master:two &&
+	echo "two@{0} push" >expect &&
+	git -C dst.git log -g --format="%gd %gs" two >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'fetch into bare respects core.logallrefupdates' '
+	rm -rf dst.git &&
+	git init --bare dst.git &&
+	(
+		cd dst.git &&
+		git config core.logallrefupdates true &&
+
+		# as above, we double-fetch to test both
+		# with and without pack transfer
+		git fetch .. master:one &&
+		echo "one@{0} fetch .. master:one: storing head" >expect &&
+		git log -g --format="%gd %gs" one >actual &&
+		test_cmp expect actual &&
+
+		git fetch .. master:two &&
+		echo "two@{0} fetch .. master:two: storing head" >expect &&
+		git log -g --format="%gd %gs" two >actual &&
+		test_cmp expect actual
+	)
+'
+
+test_expect_success 'receive.denyCurrentBranch = updateInstead' '
+	git push testrepo master &&
+	(
+		cd testrepo &&
+		git reset --hard &&
+		git config receive.denyCurrentBranch updateInstead
+	) &&
+	test_commit third path2 &&
+
+	# Try pushing into a repository with pristine working tree
+	git push testrepo master &&
+	(
+		cd testrepo &&
+		git update-index -q --refresh &&
+		git diff-files --quiet -- &&
+		git diff-index --quiet --cached HEAD -- &&
+		test third = "$(cat path2)" &&
+		test $(git -C .. rev-parse HEAD) = $(git rev-parse HEAD)
+	) &&
+
+	# Try pushing into a repository with working tree needing a refresh
+	(
+		cd testrepo &&
+		git reset --hard HEAD^ &&
+		test $(git -C .. rev-parse HEAD^) = $(git rev-parse HEAD) &&
+		test-tool chmtime +100 path1
+	) &&
+	git push testrepo master &&
+	(
+		cd testrepo &&
+		git update-index -q --refresh &&
+		git diff-files --quiet -- &&
+		git diff-index --quiet --cached HEAD -- &&
+		test_cmp ../path1 path1 &&
+		test third = "$(cat path2)" &&
+		test $(git -C .. rev-parse HEAD) = $(git rev-parse HEAD)
+	) &&
+
+	# Update what is to be pushed
+	test_commit fourth path2 &&
+
+	# Try pushing into a repository with a dirty working tree
+	# (1) the working tree updated
+	(
+		cd testrepo &&
+		echo changed >path1
+	) &&
+	test_must_fail git push testrepo master &&
+	(
+		cd testrepo &&
+		test $(git -C .. rev-parse HEAD^) = $(git rev-parse HEAD) &&
+		git diff --quiet --cached &&
+		test changed = "$(cat path1)"
+	) &&
+
+	# (2) the index updated
+	(
+		cd testrepo &&
+		echo changed >path1 &&
+		git add path1
+	) &&
+	test_must_fail git push testrepo master &&
+	(
+		cd testrepo &&
+		test $(git -C .. rev-parse HEAD^) = $(git rev-parse HEAD) &&
+		git diff --quiet &&
+		test changed = "$(cat path1)"
+	) &&
+
+	# Introduce a new file in the update
+	test_commit fifth path3 &&
+
+	# (3) the working tree has an untracked file that would interfere
+	(
+		cd testrepo &&
+		git reset --hard &&
+		echo changed >path3
+	) &&
+	test_must_fail git push testrepo master &&
+	(
+		cd testrepo &&
+		test $(git -C .. rev-parse HEAD^^) = $(git rev-parse HEAD) &&
+		git diff --quiet &&
+		git diff --quiet --cached &&
+		test changed = "$(cat path3)"
+	) &&
+
+	# (4) the target changes to what gets pushed but it still is a change
+	(
+		cd testrepo &&
+		git reset --hard &&
+		echo fifth >path3 &&
+		git add path3
+	) &&
+	test_must_fail git push testrepo master &&
+	(
+		cd testrepo &&
+		test $(git -C .. rev-parse HEAD^^) = $(git rev-parse HEAD) &&
+		git diff --quiet &&
+		test fifth = "$(cat path3)"
+	) &&
+
+	# (5) push into void
+	rm -fr void &&
+	git init void &&
+	(
+		cd void &&
+		git config receive.denyCurrentBranch updateInstead
+	) &&
+	git push void master &&
+	(
+		cd void &&
+		test $(git -C .. rev-parse master) = $(git rev-parse HEAD) &&
+		git diff --quiet &&
+		git diff --cached --quiet
+	) &&
+
+	# (6) updateInstead intervened by fast-forward check
+	test_must_fail git push void master^:master &&
+	test $(git -C void rev-parse HEAD) = $(git rev-parse master) &&
+	git -C void diff --quiet &&
+	git -C void diff --cached --quiet
+'
+
+test_expect_success 'updateInstead with push-to-checkout hook' '
+	rm -fr testrepo &&
+	git init testrepo &&
+	(
+		cd testrepo &&
+		git pull .. master &&
+		git reset --hard HEAD^^ &&
+		git tag initial &&
+		git config receive.denyCurrentBranch updateInstead &&
+		write_script .git/hooks/push-to-checkout <<-\EOF
+		echo >&2 updating from $(git rev-parse HEAD)
+		echo >&2 updating to "$1"
+
+		git update-index -q --refresh &&
+		git read-tree -u -m HEAD "$1" || {
+			status=$?
+			echo >&2 read-tree failed
+			exit $status
+		}
+		EOF
+	) &&
+
+	# Try pushing into a pristine
+	git push testrepo master &&
+	(
+		cd testrepo &&
+		git diff --quiet &&
+		git diff HEAD --quiet &&
+		test $(git -C .. rev-parse HEAD) = $(git rev-parse HEAD)
+	) &&
+
+	# Try pushing into a repository with conflicting change
+	(
+		cd testrepo &&
+		git reset --hard initial &&
+		echo conflicting >path2
+	) &&
+	test_must_fail git push testrepo master &&
+	(
+		cd testrepo &&
+		test $(git rev-parse initial) = $(git rev-parse HEAD) &&
+		test conflicting = "$(cat path2)" &&
+		git diff-index --quiet --cached HEAD
+	) &&
+
+	# Try pushing into a repository with unrelated change
+	(
+		cd testrepo &&
+		git reset --hard initial &&
+		echo unrelated >path1 &&
+		echo irrelevant >path5 &&
+		git add path5
+	) &&
+	git push testrepo master &&
+	(
+		cd testrepo &&
+		test "$(cat path1)" = unrelated &&
+		test "$(cat path5)" = irrelevant &&
+		test "$(git diff --name-only --cached HEAD)" = path5 &&
+		test $(git -C .. rev-parse HEAD) = $(git rev-parse HEAD)
+	) &&
+
+	# push into void
+	rm -fr void &&
+	git init void &&
+	(
+		cd void &&
+		git config receive.denyCurrentBranch updateInstead &&
+		write_script .git/hooks/push-to-checkout <<-\EOF
+		if git rev-parse --quiet --verify HEAD
+		then
+			has_head=yes
+			echo >&2 updating from $(git rev-parse HEAD)
+		else
+			has_head=no
+			echo >&2 pushing into void
+		fi
+		echo >&2 updating to "$1"
+
+		git update-index -q --refresh &&
+		case "$has_head" in
+		yes)
+			git read-tree -u -m HEAD "$1" ;;
+		no)
+			git read-tree -u -m "$1" ;;
+		esac || {
+			status=$?
+			echo >&2 read-tree failed
+			exit $status
+		}
+		EOF
+	) &&
+
+	git push void master &&
+	(
+		cd void &&
+		git diff --quiet &&
+		git diff --cached --quiet &&
+		test $(git -C .. rev-parse HEAD) = $(git rev-parse HEAD)
+	)
+'
+
+test_expect_success 'denyCurrentBranch and worktrees' '
+	git worktree add new-wt &&
+	git clone . cloned &&
+	test_commit -C cloned first &&
+	test_config receive.denyCurrentBranch refuse &&
+	test_must_fail git -C cloned push origin HEAD:new-wt &&
+	test_config receive.denyCurrentBranch updateInstead &&
+	git -C cloned push origin HEAD:new-wt &&
+	test_must_fail git -C cloned push --delete origin new-wt
 '
 
 test_done

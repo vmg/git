@@ -12,62 +12,92 @@ ifndef::git-pull[]
 endif::git-pull[]
 
 <refspec>::
-	The format of a <refspec> parameter is an optional plus
-	`+`, followed by the source ref <src>, followed
-	by a colon `:`, followed by the destination ref <dst>.
+	Specifies which refs to fetch and which local refs to update.
+	When no <refspec>s appear on the command line, the refs to fetch
+	are read from `remote.<repository>.fetch` variables instead
+ifndef::git-pull[]
+	(see <<CRTB,CONFIGURED REMOTE-TRACKING BRANCHES>> below).
+endif::git-pull[]
+ifdef::git-pull[]
+	(see the section "CONFIGURED REMOTE-TRACKING BRANCHES"
+	in linkgit:git-fetch[1]).
+endif::git-pull[]
++
+The format of a <refspec> parameter is an optional plus
+`+`, followed by the source <src>, followed
+by a colon `:`, followed by the destination ref <dst>.
+The colon can be omitted when <dst> is empty.  <src> is
+typically a ref, but it can also be a fully spelled hex object
+name.
++
+`tag <tag>` means the same as `refs/tags/<tag>:refs/tags/<tag>`;
+it requests fetching everything up to the given tag.
 +
 The remote ref that matches <src>
-is fetched, and if <dst> is not empty string, the local
-ref that matches it is fast-forwarded using <src>.
-If the optional plus `+` is used, the local ref
-is updated even if it does not result in a fast-forward
-update.
+is fetched, and if <dst> is not an empty string, an attempt
+is made to update the local ref that matches it.
++
+Whether that update is allowed without `--force` depends on the ref
+namespace it's being fetched to, the type of object being fetched, and
+whether the update is considered to be a fast-forward. Generally, the
+same rules apply for fetching as when pushing, see the `<refspec>...`
+section of linkgit:git-push[1] for what those are. Exceptions to those
+rules particular to 'git fetch' are noted below.
++
+Until Git version 2.20, and unlike when pushing with
+linkgit:git-push[1], any updates to `refs/tags/*` would be accepted
+without `+` in the refspec (or `--force`). When fetching, we promiscuously
+considered all tag updates from a remote to be forced fetches.  Since
+Git version 2.20, fetching to update `refs/tags/*` works the same way
+as when pushing. I.e. any updates will be rejected without `+` in the
+refspec (or `--force`).
++
+Unlike when pushing with linkgit:git-push[1], any updates outside of
+`refs/{tags,heads}/*` will be accepted without `+` in the refspec (or
+`--force`), whether that's swapping e.g. a tree object for a blob, or
+a commit for another commit that's doesn't have the previous commit as
+an ancestor etc.
++
+Unlike when pushing with linkgit:git-push[1], there is no
+configuration which'll amend these rules, and nothing like a
+`pre-fetch` hook analogous to the `pre-receive` hook.
++
+As with pushing with linkgit:git-push[1], all of the rules described
+above about what's not allowed as an update can be overridden by
+adding an the optional leading `+` to a refspec (or using `--force`
+command line option). The only exception to this is that no amount of
+forcing will make the `refs/heads/*` namespace accept a non-commit
+object.
 +
 [NOTE]
-If the remote branch from which you want to pull is
-modified in non-linear ways such as being rewound and
-rebased frequently, then a pull will attempt a merge with
-an older version of itself, likely conflict, and fail.
-It is under these conditions that you would want to use
-the `+` sign to indicate non-fast-forward updates will
-be needed.  There is currently no easy way to determine
-or declare that a branch will be made available in a
-repository with this behavior; the pulling user simply
+When the remote branch you want to fetch is known to
+be rewound and rebased regularly, it is expected that
+its new tip will not be descendant of its previous tip
+(as stored in your remote-tracking branch the last time
+you fetched).  You would want
+to use the `+` sign to indicate non-fast-forward updates
+will be needed for such branches.  There is no way to
+determine or declare that a branch will be made available
+in a repository with this behavior; the pulling user simply
 must know this is the expected usage pattern for a branch.
-+
-[NOTE]
-You never do your own development on branches that appear
-on the right hand side of a <refspec> colon on `Pull:` lines;
-they are to be updated by 'git fetch'.  If you intend to do
-development derived from a remote branch `B`, have a `Pull:`
-line to track it (i.e. `Pull: B:remote-B`), and have a separate
-branch `my-B` to do your development on top of it.  The latter
-is created by `git branch my-B remote-B` (or its equivalent `git
-checkout -b my-B remote-B`).  Run `git fetch` to keep track of
-the progress of the remote side, and when you see something new
-on the remote branch, merge it into your development branch with
-`git pull . remote-B`, while you are on `my-B` branch.
+ifdef::git-pull[]
 +
 [NOTE]
 There is a difference between listing multiple <refspec>
 directly on 'git pull' command line and having multiple
-`Pull:` <refspec> lines for a <repository> and running
+`remote.<repository>.fetch` entries in your configuration
+for a <repository> and running a
 'git pull' command without any explicit <refspec> parameters.
-<refspec> listed explicitly on the command line are always
+<refspec>s listed explicitly on the command line are always
 merged into the current branch after fetching.  In other words,
-if you list more than one remote refs, you would be making
-an Octopus.  While 'git pull' run without any explicit <refspec>
-parameter takes default <refspec>s from `Pull:` lines, it
-merges only the first <refspec> found into the current branch,
-after fetching all the remote refs.  This is because making an
+if you list more than one remote ref, 'git pull' will create
+an Octopus merge.  On the other hand, if you do not list any
+explicit <refspec> parameter on the command line, 'git pull'
+will fetch all the <refspec>s it finds in the
+`remote.<repository>.fetch` configuration and merge
+only the first <refspec> found into the current branch.
+This is because making an
 Octopus from remote refs is rarely done, while keeping track
 of multiple remote heads in one-go by fetching more than one
 is often useful.
-+
-Some short-cut notations are also supported.
-+
-* `tag <tag>` means the same as `refs/tags/<tag>:refs/tags/<tag>`;
-  it requests fetching everything up to the given tag.
-* A parameter <ref> without a colon is equivalent to
-  <ref>: when pulling/fetching, so it merges <ref> into the current
-  branch without storing the remote branch anywhere locally
+endif::git-pull[]

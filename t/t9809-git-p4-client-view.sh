@@ -76,28 +76,28 @@ test_expect_success 'init depot' '
 '
 
 # double % for printf
-test_expect_success 'unsupported view wildcard %%n' '
+test_expect_success 'view wildcard %%n' '
 	client_view "//depot/%%%%1/sub/... //client/sub/%%%%1/..." &&
 	test_when_finished cleanup_git &&
-	test_must_fail git p4 clone --use-client-spec --dest="$git" //depot
+	git p4 clone --use-client-spec --dest="$git" //depot
 '
 
-test_expect_success 'unsupported view wildcard *' '
+test_expect_success 'view wildcard *' '
 	client_view "//depot/*/bar/... //client/*/bar/..." &&
 	test_when_finished cleanup_git &&
-	test_must_fail git p4 clone --use-client-spec --dest="$git" //depot
+	git p4 clone --use-client-spec --dest="$git" //depot
 '
 
-test_expect_success 'wildcard ... only supported at end of spec 1' '
+test_expect_success 'wildcard ... in the middle' '
 	client_view "//depot/.../file11 //client/.../file11" &&
 	test_when_finished cleanup_git &&
-	test_must_fail git p4 clone --use-client-spec --dest="$git" //depot
+	git p4 clone --use-client-spec --dest="$git" //depot
 '
 
-test_expect_success 'wildcard ... only supported at end of spec 2' '
+test_expect_success 'wildcard ... in the middle and at the end' '
 	client_view "//depot/.../a/... //client/.../a/..." &&
 	test_when_finished cleanup_git &&
-	test_must_fail git p4 clone --use-client-spec --dest="$git" //depot
+	git p4 clone --use-client-spec --dest="$git" //depot
 '
 
 test_expect_success 'basic map' '
@@ -365,7 +365,7 @@ test_expect_success 'wildcard files submit back to p4, client-spec case' '
 	(
 		cd "$git" &&
 		echo git-wild-hash >dir1/git-wild#hash &&
-		if test_have_prereq NOT_MINGW NOT_CYGWIN
+		if test_have_prereq !MINGW,!CYGWIN
 		then
 			echo git-wild-star >dir1/git-wild\*star
 		fi &&
@@ -379,7 +379,7 @@ test_expect_success 'wildcard files submit back to p4, client-spec case' '
 	(
 		cd "$cli" &&
 		test_path_is_file dir1/git-wild#hash &&
-		if test_have_prereq NOT_MINGW NOT_CYGWIN
+		if test_have_prereq !MINGW,!CYGWIN
 		then
 			test_path_is_file dir1/git-wild\*star
 		fi &&
@@ -407,7 +407,7 @@ test_expect_success 'reinit depot' '
 '
 
 #
-# What happens when two files of the same name are overlayed together?
+# What happens when two files of the same name are overlaid together?
 # The last-listed file should take preference.
 #
 # //depot
@@ -834,10 +834,6 @@ test_expect_success 'quotes on both sides' '
 	test_when_finished cleanup_git &&
 	git p4 clone --use-client-spec --dest="$git" //depot &&
 	git_verify "cdir 1/file11" "cdir 1/file12"
-'
-
-test_expect_success 'kill p4d' '
-	kill_p4d
 '
 
 test_done

@@ -8,9 +8,10 @@ git-add - Add file contents to the index
 SYNOPSIS
 --------
 [verse]
-'git add' [-n] [-v] [--force | -f] [--interactive | -i] [--patch | -p]
+'git add' [--verbose | -v] [--dry-run | -n] [--force | -f] [--interactive | -i] [--patch | -p]
 	  [--edit | -e] [--[no-]all | --[no-]ignore-removal | [--update | -u]]
-	  [--intent-to-add | -N] [--refresh] [--ignore-errors] [--ignore-missing]
+	  [--intent-to-add | -N] [--refresh] [--ignore-errors] [--ignore-missing] [--renormalize]
+	  [--chmod=(+|-)x] [--pathspec-from-file=<file> [--pathspec-file-nul]]
 	  [--] [<pathspec>...]
 
 DESCRIPTION
@@ -24,7 +25,7 @@ remove paths that do not exist in the working tree anymore.
 
 The "index" holds a snapshot of the content of the working tree, and it
 is this snapshot that is taken as the contents of the next commit.  Thus
-after making any changes to the working directory, and before running
+after making any changes to the working tree, and before running
 the commit command, you must use the `add` command to add any new or
 modified files to the index.
 
@@ -53,8 +54,17 @@ OPTIONS
 	Files to add content from.  Fileglobs (e.g. `*.c`) can
 	be given to add all matching files.  Also a
 	leading directory name (e.g. `dir` to add `dir/file1`
-	and `dir/file2`) can be given to add all files in the
-	directory, recursively.
+	and `dir/file2`) can be given to update the index to
+	match the current state of the directory as a whole (e.g.
+	specifying `dir` will record not just a file `dir/file1`
+	modified in the working tree, a file `dir/file2` added to
+	the working tree, but also a file `dir/file3` removed from
+	the working tree). Note that older versions of Git used
+	to ignore removed files; use `--no-all` option if you want
+	to add modified or new files but ignore removed ones.
++
+For more details about the <pathspec> syntax, see the 'pathspec' entry
+in linkgit:gitglossary[7].
 
 -n::
 --dry-run::
@@ -87,7 +97,8 @@ This effectively runs `add --interactive`, but bypasses the
 initial command menu and directly jumps to the `patch` subcommand.
 See ``Interactive mode'' for details.
 
--e, \--edit::
+-e::
+--edit::
 	Open the diff vs. the index in an editor and let the user
 	edit it.  After the editor was closed, adjust the hunk headers
 	and apply the patch to the index.
@@ -104,23 +115,23 @@ apply to the index. See EDITING PATCHES below.
 	<pathspec>.  This removes as well as modifies index entries to
 	match the working tree, but adds no new files.
 +
-If no <pathspec> is given, the current version of Git defaults to
-"."; in other words, update all tracked files in the current directory
-and its subdirectories. This default will change in a future version
-of Git, hence the form without <pathspec> should not be used.
+If no <pathspec> is given when `-u` option is used, all
+tracked files in the entire working tree are updated (old versions
+of Git used to limit the update to the current directory and its
+subdirectories).
 
 -A::
 --all::
 --no-ignore-removal::
 	Update the index not only where the working tree has a file
 	matching <pathspec> but also where the index already has an
-	entry.	This adds, modifies, and removes index entries to
+	entry. This adds, modifies, and removes index entries to
 	match the working tree.
 +
-If no <pathspec> is given, the current version of Git defaults to
-"."; in other words, update all files in the current directory
-and its subdirectories. This default will change in a future version
-of Git, hence the form without <pathspec> should not be used.
+If no <pathspec> is given when `-A` option is used, all
+files in the entire working tree are updated (old versions
+of Git used to limit the update to the current directory and its
+subdirectories).
 
 --no-all::
 --ignore-removal::
@@ -129,11 +140,9 @@ of Git, hence the form without <pathspec> should not be used.
 	files that have been removed from the working tree.  This
 	option is a no-op when no <pathspec> is used.
 +
-This option is primarily to help the current users of Git, whose
-"git add <pathspec>..." ignores removed files.  In future versions
-of Git, "git add <pathspec>..." will be a synonym to "git add -A
-<pathspec>..." and "git add --ignore-removal <pathspec>..." will behave like
-today's "git add <pathspec>...", ignoring removed files.
+This option is primarily to help users who are used to older
+versions of Git, whose "git add <pathspec>..." was a synonym
+for "git add --no-all <pathspec>...", i.e. ignored removed files.
 
 -N::
 --intent-to-add::
@@ -160,26 +169,49 @@ today's "git add <pathspec>...", ignoring removed files.
 	be ignored, no matter if they are already present in the work
 	tree or not.
 
+--no-warn-embedded-repo::
+	By default, `git add` will warn when adding an embedded
+	repository to the index without using `git submodule add` to
+	create an entry in `.gitmodules`. This option will suppress the
+	warning (e.g., if you are manually performing operations on
+	submodules).
+
+--renormalize::
+	Apply the "clean" process freshly to all tracked files to
+	forcibly add them again to the index.  This is useful after
+	changing `core.autocrlf` configuration or the `text` attribute
+	in order to correct files added with wrong CRLF/LF line endings.
+	This option implies `-u`.
+
+--chmod=(+|-)x::
+	Override the executable bit of the added files.  The executable
+	bit is only changed in the index, the files on disk are left
+	unchanged.
+
+--pathspec-from-file=<file>::
+	Pathspec is passed in `<file>` instead of commandline args. If
+	`<file>` is exactly `-` then standard input is used. Pathspec
+	elements are separated by LF or CR/LF. Pathspec elements can be
+	quoted as explained for the configuration variable `core.quotePath`
+	(see linkgit:git-config[1]). See also `--pathspec-file-nul` and
+	global `--literal-pathspecs`.
+
+--pathspec-file-nul::
+	Only meaningful with `--pathspec-from-file`. Pathspec elements are
+	separated with NUL character and all other characters are taken
+	literally (including newlines and quotes).
+
 \--::
 	This option can be used to separate command-line options from
 	the list of files, (useful when filenames might be mistaken
 	for command-line options).
 
 
-Configuration
--------------
-
-The optional configuration variable `core.excludesfile` indicates a path to a
-file containing patterns of file names to exclude from git-add, similar to
-$GIT_DIR/info/exclude.  Patterns in the exclude file are used in addition to
-those in info/exclude.  See linkgit:gitignore[5].
-
-
 EXAMPLES
 --------
 
 * Adds content from all `*.txt` files under `Documentation` directory
-and its subdirectories:
+  and its subdirectories:
 +
 ------------
 $ git add Documentation/\*.txt
@@ -199,7 +231,7 @@ Because this example lets the shell expand the asterisk (i.e. you are
 listing the files explicitly), it does not consider
 `subdir/git-foo.sh`.
 
-Interactive mode
+INTERACTIVE MODE
 ----------------
 When the command enters the interactive mode, it shows the
 output of the 'status' subcommand, and then goes into its
@@ -296,9 +328,9 @@ patch::
 
        y - stage this hunk
        n - do not stage this hunk
-       q - quit; do not stage this hunk nor any of the remaining ones
+       q - quit; do not stage this hunk or any of the remaining ones
        a - stage this hunk and all later hunks in the file
-       d - do not stage this hunk nor any of the later hunks in the file
+       d - do not stage this hunk or any of the later hunks in the file
        g - select a hunk to go to
        / - search for a hunk matching the given regex
        j - leave this hunk undecided, see next undecided hunk
@@ -313,7 +345,7 @@ After deciding the fate for all hunks, if there is any hunk
 that was chosen, the index is updated with the selected hunks.
 +
 You can omit having to type return here, by setting the configuration
-variable `interactive.singlekey` to `true`.
+variable `interactive.singleKey` to `true`.
 
 diff::
 

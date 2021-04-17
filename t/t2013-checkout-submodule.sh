@@ -3,6 +3,7 @@
 test_description='checkout can handle submodules'
 
 . ./test-lib.sh
+. "$TEST_DIRECTORY"/lib-submodule-update.sh
 
 test_expect_success 'setup' '
 	mkdir submodule &&
@@ -43,7 +44,7 @@ test_expect_success '"checkout <submodule>" honors diff.ignoreSubmodules' '
 	git config diff.ignoreSubmodules dirty &&
 	echo x> submodule/untracked &&
 	git checkout HEAD >actual 2>&1 &&
-	! test -s actual
+	test_must_be_empty actual
 '
 
 test_expect_success '"checkout <submodule>" honors submodule.*.ignore from .gitmodules' '
@@ -51,7 +52,7 @@ test_expect_success '"checkout <submodule>" honors submodule.*.ignore from .gitm
 	git config -f .gitmodules submodule.submodule.path submodule &&
 	git config -f .gitmodules submodule.submodule.ignore untracked &&
 	git checkout HEAD >actual 2>&1 &&
-	! test -s actual
+	test_must_be_empty actual
 '
 
 test_expect_success '"checkout <submodule>" honors submodule.*.ignore from .git/config' '
@@ -59,7 +60,16 @@ test_expect_success '"checkout <submodule>" honors submodule.*.ignore from .git/
 	git config submodule.submodule.path submodule &&
 	git config submodule.submodule.ignore all &&
 	git checkout HEAD >actual 2>&1 &&
-	! test -s actual
+	test_must_be_empty actual
 '
+
+KNOWN_FAILURE_DIRECTORY_SUBMODULE_CONFLICTS=1
+test_submodule_switch_recursing_with_args "checkout"
+
+test_submodule_forced_switch_recursing_with_args "checkout -f"
+
+test_submodule_switch "git checkout"
+
+test_submodule_forced_switch "git checkout -f"
 
 test_done

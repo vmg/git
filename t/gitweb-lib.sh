@@ -1,4 +1,5 @@
-#!/bin/sh
+# Initialization and helpers for Gitweb tests, which source this
+# shell library instead of test-lib.sh.
 #
 # Copyright (c) 2007 Jakub Narebski
 #
@@ -36,7 +37,7 @@ EOF
 
 	# You can set the GITWEB_TEST_INSTALLED environment variable to
 	# the gitwebdir (the directory where gitweb is installed / deployed to)
-	# of an existing gitweb instalation to test that installation,
+	# of an existing gitweb installation to test that installation,
 	# or simply to pathname of installed gitweb script.
 	if test -n "$GITWEB_TEST_INSTALLED" ; then
 		if test -d $GITWEB_TEST_INSTALLED; then
@@ -57,10 +58,11 @@ gitweb_run () {
 	GATEWAY_INTERFACE='CGI/1.1'
 	HTTP_ACCEPT='*/*'
 	REQUEST_METHOD='GET'
-	QUERY_STRING=""$1""
-	PATH_INFO=""$2""
+	QUERY_STRING=$1
+	PATH_INFO=$2
+	REQUEST_URI=/gitweb.cgi$PATH_INFO
 	export GATEWAY_INTERFACE HTTP_ACCEPT REQUEST_METHOD \
-		QUERY_STRING PATH_INFO
+		QUERY_STRING PATH_INFO REQUEST_URI
 
 	GITWEB_CONFIG=$(pwd)/gitweb_config.perl
 	export GITWEB_CONFIG
@@ -69,7 +71,7 @@ gitweb_run () {
 	# written to web server logs, so we are not interested in that:
 	# we are interested only in properly formatted errors/warnings
 	rm -f gitweb.log &&
-	"$PERL_PATH" -- "$SCRIPT_NAME" \
+	perl -- "$SCRIPT_NAME" \
 		>gitweb.output 2>gitweb.log &&
 	perl -w -e '
 		open O, ">gitweb.headers";
@@ -109,7 +111,12 @@ perl -MEncode -e '$e="";decode_utf8($e, Encode::FB_CROAK)' >/dev/null 2>&1 || {
 }
 
 perl -MCGI -MCGI::Util -MCGI::Carp -e 0 >/dev/null 2>&1 || {
-	skip_all='skipping gitweb tests, CGI module unusable'
+	skip_all='skipping gitweb tests, CGI & CGI::Util & CGI::Carp modules not available'
+	test_done
+}
+
+perl -mTime::HiRes -e 0 >/dev/null 2>&1 || {
+	skip_all='skipping gitweb tests, Time::HiRes module not available'
 	test_done
 }
 

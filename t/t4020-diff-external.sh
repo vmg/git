@@ -13,6 +13,8 @@ test_expect_success setup '
 
 	test_tick &&
 	echo second >file &&
+	before=$(git hash-object file) &&
+	before=$(git rev-parse --short $before) &&
 	git add file &&
 	git commit -m second &&
 
@@ -26,7 +28,7 @@ test_expect_success 'GIT_EXTERNAL_DIFF environment' '
 		read path oldfile oldhex oldmode newfile newhex newmode &&
 		test "z$path" = zfile &&
 		test "z$oldmode" = z100644 &&
-		test "z$newhex" = "z$_z40" &&
+		test "z$newhex" = "z$ZERO_OID" &&
 		test "z$newmode" = z100644 &&
 		oh=$(git rev-parse --verify HEAD:file) &&
 		test "z$oh" = "z$oldhex"
@@ -55,7 +57,7 @@ test_expect_success SYMLINKS 'typechange diff' '
 		read path oldfile oldhex oldmode newfile newhex newmode &&
 		test "z$path" = zfile &&
 		test "z$oldmode" = z100644 &&
-		test "z$newhex" = "z$_z40" &&
+		test "z$newhex" = "z$ZERO_OID" &&
 		test "z$newmode" = z120000 &&
 		oh=$(git rev-parse --verify HEAD:file) &&
 		test "z$oh" = "z$oldhex"
@@ -73,7 +75,7 @@ test_expect_success 'diff.external' '
 		read path oldfile oldhex oldmode newfile newhex newmode &&
 		test "z$path" = zfile &&
 		test "z$oldmode" = z100644 &&
-		test "z$newhex" = "z$_z40" &&
+		test "z$newhex" = "z$ZERO_OID" &&
 		test "z$newmode" = z100644 &&
 		oh=$(git rev-parse --verify HEAD:file) &&
 		test "z$oh" = "z$oldhex"
@@ -104,7 +106,7 @@ test_expect_success 'diff attribute' '
 		read path oldfile oldhex oldmode newfile newhex newmode &&
 		test "z$path" = zfile &&
 		test "z$oldmode" = z100644 &&
-		test "z$newhex" = "z$_z40" &&
+		test "z$newhex" = "z$ZERO_OID" &&
 		test "z$newmode" = z100644 &&
 		oh=$(git rev-parse --verify HEAD:file) &&
 		test "z$oh" = "z$oldhex"
@@ -137,7 +139,7 @@ test_expect_success 'diff attribute' '
 		read path oldfile oldhex oldmode newfile newhex newmode &&
 		test "z$path" = zfile &&
 		test "z$oldmode" = z100644 &&
-		test "z$newhex" = "z$_z40" &&
+		test "z$newhex" = "z$ZERO_OID" &&
 		test "z$newmode" = z100644 &&
 		oh=$(git rev-parse --verify HEAD:file) &&
 		test "z$oh" = "z$oldhex"
@@ -177,12 +179,16 @@ test_expect_success 'no diff with -diff' '
 	git diff | grep Binary
 '
 
-echo NULZbetweenZwords | "$PERL_PATH" -pe 'y/Z/\000/' > file
+echo NULZbetweenZwords | perl -pe 'y/Z/\000/' > file
 
 test_expect_success 'force diff with "diff"' '
+	after=$(git hash-object file) &&
+	after=$(git rev-parse --short $after) &&
 	echo >.gitattributes "file diff" &&
 	git diff >actual &&
-	test_cmp "$TEST_DIRECTORY"/t4020/diff.NUL actual
+	sed -e "s/^index .*/index $before..$after 100644/" \
+		"$TEST_DIRECTORY"/t4020/diff.NUL >expected-diff &&
+	test_cmp expected-diff actual
 '
 
 test_expect_success 'GIT_EXTERNAL_DIFF with more than one changed files' '
@@ -191,6 +197,19 @@ test_expect_success 'GIT_EXTERNAL_DIFF with more than one changed files' '
 	git commit -m "added 2nd file" &&
 	echo modified >file2 &&
 	GIT_EXTERNAL_DIFF=echo git diff
+'
+
+test_expect_success 'GIT_EXTERNAL_DIFF path counter/total' '
+	write_script external-diff.sh <<-\EOF &&
+	echo $GIT_DIFF_PATH_COUNTER of $GIT_DIFF_PATH_TOTAL >>counter.txt
+	EOF
+	>counter.txt &&
+	cat >expect <<-\EOF &&
+	1 of 2
+	2 of 2
+	EOF
+	GIT_EXTERNAL_DIFF=./external-diff.sh git diff &&
+	test_cmp expect counter.txt
 '
 
 test_expect_success 'GIT_EXTERNAL_DIFF generates pretty paths' '
@@ -213,17 +232,45 @@ keep_only_cr () {
 }
 
 test_expect_success 'external diff with autocrlf = true' '
-	git config core.autocrlf true &&
+	test_config core.autocrlf true &&
 	GIT_EXTERNAL_DIFF=./fake-diff.sh git diff &&
 	test $(wc -l < crlfed.txt) = $(cat crlfed.txt | keep_only_cr | wc -c)
 '
 
 test_expect_success 'diff --cached' '
+	test_config core.autocrlf true &&
 	git add file &&
 	git update-index --assume-unchanged file &&
 	echo second >file &&
 	git diff --cached >actual &&
-	test_cmp "$TEST_DIRECTORY"/t4020/diff.NUL actual
+	test_cmp expected-diff actual
+'
+
+test_expect_success 'clean up crlf leftovers' '
+	git update-index --no-assume-unchanged file &&
+	rm -f file* &&
+	git reset --hard
+'
+
+test_expect_success 'submodule diff' '
+	git init sub &&
+	( cd sub && test_commit sub1 ) &&
+	git add sub &&
+	test_tick &&
+	git commit -m "add submodule" &&
+	( cd sub && test_commit sub2 ) &&
+	write_script gather_pre_post.sh <<-\EOF &&
+	echo "$1 $4" # path, mode
+	cat "$2" # old file
+	cat "$5" # new file
+	EOF
+	GIT_EXTERNAL_DIFF=./gather_pre_post.sh git diff >actual &&
+	cat >expected <<-EOF &&
+	sub 160000
+	Subproject commit $(git rev-parse HEAD:sub)
+	Subproject commit $(cd sub && git rev-parse HEAD)
+	EOF
+	test_cmp expected actual
 '
 
 test_done

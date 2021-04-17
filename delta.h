@@ -9,11 +9,11 @@ struct delta_index;
  *
  * This returns a pointer to a struct delta_index that should be passed to
  * subsequent create_delta() calls, or to free_delta_index().  A NULL pointer
- * is returned on failure.  The given buffer must not be freed nor altered
+ * is returned on failure.  The given buffer must not be freed or altered
  * before free_delta_index() is called.  The returned pointer must be freed
  * using free_delta_index().
  */
-extern struct delta_index *
+struct delta_index *
 create_delta_index(const void *buf, unsigned long bufsize);
 
 /*
@@ -21,14 +21,14 @@ create_delta_index(const void *buf, unsigned long bufsize);
  *
  * Given pointer must be what create_delta_index() returned, or NULL.
  */
-extern void free_delta_index(struct delta_index *index);
+void free_delta_index(struct delta_index *index);
 
 /*
  * sizeof_delta_index: returns memory usage of delta index
  *
  * Given pointer must be what create_delta_index() returned, or NULL.
  */
-extern unsigned long sizeof_delta_index(struct delta_index *index);
+unsigned long sizeof_delta_index(struct delta_index *index);
 
 /*
  * create_delta: create a delta from given index for the given buffer
@@ -40,7 +40,7 @@ extern unsigned long sizeof_delta_index(struct delta_index *index);
  * returned and *delta_size is updated with its size.  The returned buffer
  * must be freed by the caller.
  */
-extern void *
+void *
 create_delta(const struct delta_index *index,
 	     const void *buf, unsigned long bufsize,
 	     unsigned long *delta_size, unsigned long max_delta_size);
@@ -75,9 +75,9 @@ diff_delta(const void *src_buf, unsigned long src_bufsize,
  * *trg_bufsize is updated with its size.  On failure a NULL pointer is
  * returned.  The returned buffer must be freed by the caller.
  */
-extern void *patch_delta(const void *src_buf, unsigned long src_size,
-			 const void *delta_buf, unsigned long delta_size,
-			 unsigned long *dst_size);
+void *patch_delta(const void *src_buf, unsigned long src_size,
+		  const void *delta_buf, unsigned long delta_size,
+		  unsigned long *dst_size);
 
 /* the smallest possible delta size is 4 bytes */
 #define DELTA_SIZE_MIN	4

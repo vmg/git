@@ -1,4 +1,5 @@
 #include "cache.h"
+#include "config.h"
 #include "run-command.h"
 #include "strbuf.h"
 #include "prompt.h"
@@ -6,7 +7,7 @@
 
 static char *do_askpass(const char *cmd, const char *prompt)
 {
-	struct child_process pass;
+	struct child_process pass = CHILD_PROCESS_INIT;
 	const char *args[3];
 	static struct strbuf buffer = STRBUF_INIT;
 	int err = 0;
@@ -15,13 +16,13 @@ static char *do_askpass(const char *cmd, const char *prompt)
 	args[1]	= prompt;
 	args[2] = NULL;
 
-	memset(&pass, 0, sizeof(pass));
 	pass.argv = args;
 	pass.out = -1;
 
 	if (start_command(&pass))
 		return NULL;
 
+	strbuf_reset(&buffer);
 	if (strbuf_read(&buffer, pass.out, 20) < 0)
 		err = 1;
 
@@ -38,7 +39,7 @@ static char *do_askpass(const char *cmd, const char *prompt)
 
 	strbuf_setlen(&buffer, strcspn(buffer.buf, "\r\n"));
 
-	return strbuf_detach(&buffer, NULL);
+	return buffer.buf;
 }
 
 char *git_prompt(const char *prompt, int flags)
@@ -57,16 +58,31 @@ char *git_prompt(const char *prompt, int flags)
 			r = do_askpass(askpass, prompt);
 	}
 
-	if (!r)
-		r = git_terminal_prompt(prompt, flags & PROMPT_ECHO);
 	if (!r) {
-		/* prompts already contain ": " at the end */
-		die("could not read %s%s", prompt, strerror(errno));
+		const char *err;
+
+		if (git_env_bool("GIT_TERMINAL_PROMPT", 1)) {
+			r = git_terminal_prompt(prompt, flags & PROMPT_ECHO);
+			err = strerror(errno);
+		} else {
+			err = "terminal prompts disabled";
+		}
+		if (!r) {
+			/* prompts already contain ": " at the end */
+			die("could not read %s%s", prompt, err);
+		}
 	}
 	return r;
 }
 
-char *git_getpass(const char *prompt)
+int git_read_line_interactively(struct strbuf *line)
 {
-	return git_prompt(prompt, PROMPT_ASKPASS);
+	int ret;
+
+	fflush(stdout);
+	ret = strbuf_getline_lf(line, stdin);
+	if (ret != EOF)
+		strbuf_trim_trailing_newline(line);
+
+	return ret;
 }

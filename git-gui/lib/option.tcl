@@ -150,6 +150,7 @@ proc do_options {} {
 		{b gui.matchtrackingbranch {mc "Match Tracking Branches"}}
 		{b gui.textconv {mc "Use Textconv For Diffs and Blames"}}
 		{b gui.fastcopyblame {mc "Blame Copy Only On Changed Files"}}
+		{i-0..100 gui.maxrecentrepo {mc "Maximum Length of Recent Repositories List"}}
 		{i-20..200 gui.copyblamethreshold {mc "Minimum Letters To Blame Copy On"}}
 		{i-0..300 gui.blamehistoryctx {mc "Blame History Context Radius (days)"}}
 		{i-1..99 gui.diffcontext {mc "Number of Diff Context Lines"}}
@@ -159,6 +160,8 @@ proc do_options {} {
 		{c gui.encoding {mc "Default File Contents Encoding"}}
 		{b gui.warndetachedcommit {mc "Warn before committing to a detached head"}}
 		{s gui.stageuntracked {mc "Staging of untracked files"} {list "yes" "no" "ask"}}
+		{b gui.displayuntracked {mc "Show untracked files"}}
+		{i-1..99 gui.tabsize {mc "Tab spacing"}}
 		} {
 		set type [lindex $option 0]
 		set name [lindex $option 1]
@@ -176,7 +179,7 @@ proc do_options {} {
 			i-* {
 				regexp -- {-(\d+)\.\.(\d+)$} $type _junk min max
 				${NS}::frame $w.$f.$optid
-				${NS}::label $w.$f.$optid.l -text "$text:"
+				${NS}::label $w.$f.$optid.l -text [mc "%s:" $text]
 				pack $w.$f.$optid.l -side left -anchor w -fill x
 				tspinbox $w.$f.$optid.v \
 					-textvariable ${f}_config_new($name) \
@@ -191,7 +194,7 @@ proc do_options {} {
 			c -
 			t {
 				${NS}::frame $w.$f.$optid
-				${NS}::label $w.$f.$optid.l -text "$text:"
+				${NS}::label $w.$f.$optid.l -text [mc "%s:" $text]
 				${NS}::entry $w.$f.$optid.v \
 					-width 20 \
 					-textvariable ${f}_config_new($name)
@@ -214,7 +217,7 @@ proc do_options {} {
 			s {
 				set opts [eval [lindex $option 3]]
 				${NS}::frame $w.$f.$optid
-				${NS}::label $w.$f.$optid.l -text "$text:"
+				${NS}::label $w.$f.$optid.l -text [mc "%s:" $text]
 				if {$use_ttk} {
 					ttk::combobox $w.$f.$optid.v \
 						-textvariable ${f}_config_new($name) \
@@ -276,7 +279,7 @@ proc do_options {} {
 			[font configure $font -size]
 
 		${NS}::frame $w.global.$name
-		${NS}::label $w.global.$name.l -text "$text:"
+		${NS}::label $w.global.$name.l -text [mc "%s:" $text]
 		${NS}::button $w.global.$name.b \
 			-text [mc "Change Font"] \
 			-command [list \

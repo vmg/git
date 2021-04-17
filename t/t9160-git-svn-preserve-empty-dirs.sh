@@ -11,7 +11,6 @@ local Git repository with placeholder files.'
 
 . ./lib-git-svn.sh
 
-say 'define NO_SVN_TESTS to skip git svn tests'
 GIT_REPO=git-svn-repo
 
 test_expect_success 'initialize source svn repo containing empty dirs' '
@@ -87,8 +86,8 @@ test_expect_success 'remove non-last entry from directory' '
 		cd "$GIT_REPO" &&
 		git checkout HEAD~2
 	) &&
-	test_must_fail test -f "$GIT_REPO"/2/.gitignore &&
-	test_must_fail test -f "$GIT_REPO"/3/.gitignore
+	test_path_is_missing "$GIT_REPO"/2/.gitignore &&
+	test_path_is_missing "$GIT_REPO"/3/.gitignore
 '
 
 # After re-cloning the repository with --placeholder-file specified, there

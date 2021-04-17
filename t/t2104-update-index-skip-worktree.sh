@@ -7,6 +7,10 @@ test_description='skip-worktree bit test'
 
 . ./test-lib.sh
 
+sane_unset GIT_TEST_SPLIT_INDEX
+
+test_set_index_version 3
+
 cat >expect.full <<EOF
 H 1
 H 2
@@ -29,7 +33,7 @@ test_expect_success 'setup' '
 '
 
 test_expect_success 'index is at version 2' '
-	test "$(test-index-version < .git/index)" = 2
+	test "$(test-tool index-version < .git/index)" = 2
 '
 
 test_expect_success 'update-index --skip-worktree' '
@@ -38,7 +42,7 @@ test_expect_success 'update-index --skip-worktree' '
 '
 
 test_expect_success 'index is at version 3 after having some skip-worktree entries' '
-	test "$(test-index-version < .git/index)" = 3
+	test "$(test-tool index-version < .git/index)" = 3
 '
 
 test_expect_success 'ls-files -t' '
@@ -51,7 +55,7 @@ test_expect_success 'update-index --no-skip-worktree' '
 '
 
 test_expect_success 'index version is back to 2 when there is no skip-worktree entry' '
-	test "$(test-index-version < .git/index)" = 2
+	test "$(test-tool index-version < .git/index)" = 2
 '
 
 test_done

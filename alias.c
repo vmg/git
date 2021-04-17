@@ -1,32 +1,54 @@
 #include "cache.h"
+#include "alias.h"
+#include "config.h"
+#include "string-list.h"
 
-static const char *alias_key;
-static char *alias_val;
+struct config_alias_data {
+	const char *alias;
+	char *v;
+	struct string_list *list;
+};
 
-static int alias_lookup_cb(const char *k, const char *v, void *cb)
+static int config_alias_cb(const char *key, const char *value, void *d)
 {
-	if (!prefixcmp(k, "alias.") && !strcmp(k+6, alias_key)) {
-		if (!v)
-			return config_error_nonbool(k);
-		alias_val = xstrdup(v);
+	struct config_alias_data *data = d;
+	const char *p;
+
+	if (!skip_prefix(key, "alias.", &p))
 		return 0;
+
+	if (data->alias) {
+		if (!strcasecmp(p, data->alias))
+			return git_config_string((const char **)&data->v,
+						 key, value);
+	} else if (data->list) {
+		string_list_append(data->list, p);
 	}
+
 	return 0;
 }
 
 char *alias_lookup(const char *alias)
 {
-	alias_key = alias;
-	alias_val = NULL;
-	git_config(alias_lookup_cb, NULL);
-	return alias_val;
+	struct config_alias_data data = { alias, NULL };
+
+	read_early_config(config_alias_cb, &data);
+
+	return data.v;
+}
+
+void list_aliases(struct string_list *list)
+{
+	struct config_alias_data data = { NULL, NULL, list };
+
+	read_early_config(config_alias_cb, &data);
 }
 
 #define SPLIT_CMDLINE_BAD_ENDING 1
 #define SPLIT_CMDLINE_UNCLOSED_QUOTE 2
 static const char *split_cmdline_errors[] = {
-	"cmdline ends with \\",
-	"unclosed quote"
+	N_("cmdline ends with \\"),
+	N_("unclosed quote")
 };
 
 int split_cmdline(char *cmdline, const char ***argv)
@@ -34,7 +56,7 @@ int split_cmdline(char *cmdline, const char ***argv)
 	int src, dst, count = 0, size = 16;
 	char quoted = 0;
 
-	*argv = xmalloc(sizeof(char *) * size);
+	ALLOC_ARRAY(*argv, size);
 
 	/* split alias_string */
 	(*argv)[count++] = cmdline;
@@ -45,7 +67,7 @@ int split_cmdline(char *cmdline, const char ***argv)
 			while (cmdline[++src]
 					&& isspace(cmdline[src]))
 				; /* skip */
-			ALLOC_GROW(*argv, count+1, size);
+			ALLOC_GROW(*argv, count + 1, size);
 			(*argv)[count++] = cmdline + dst;
 		} else if (!quoted && (c == '\'' || c == '"')) {
 			quoted = c;
@@ -58,8 +80,7 @@ int split_cmdline(char *cmdline, const char ***argv)
 				src++;
 				c = cmdline[src];
 				if (!c) {
-					free(*argv);
-					*argv = NULL;
+					FREE_AND_NULL(*argv);
 					return -SPLIT_CMDLINE_BAD_ENDING;
 				}
 			}
@@ -71,17 +92,17 @@ int split_cmdline(char *cmdline, const char ***argv)
 	cmdline[dst] = 0;
 
 	if (quoted) {
-		free(*argv);
-		*argv = NULL;
+		FREE_AND_NULL(*argv);
 		return -SPLIT_CMDLINE_UNCLOSED_QUOTE;
 	}
 
-	ALLOC_GROW(*argv, count+1, size);
+	ALLOC_GROW(*argv, count + 1, size);
 	(*argv)[count] = NULL;
 
 	return count;
 }
 
-const char *split_cmdline_strerror(int split_cmdline_errno) {
-	return split_cmdline_errors[-split_cmdline_errno-1];
+const char *split_cmdline_strerror(int split_cmdline_errno)
+{
+	return split_cmdline_errors[-split_cmdline_errno - 1];
 }

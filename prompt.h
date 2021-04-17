@@ -5,6 +5,7 @@
 #define PROMPT_ECHO    (1<<1)
 
 char *git_prompt(const char *prompt, int flags);
-char *git_getpass(const char *prompt);
+
+int git_read_line_interactively(struct strbuf *line);
 
 #endif /* PROMPT_H */

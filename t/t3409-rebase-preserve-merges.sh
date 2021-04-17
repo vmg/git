@@ -8,17 +8,14 @@ Run "git rebase -p" and check that merges are properly carried along
 '
 . ./test-lib.sh
 
+if ! test_have_prereq REBASE_P; then
+	skip_all='skipping git rebase -p tests, as asked for'
+	test_done
+fi
+
 GIT_AUTHOR_EMAIL=bogus_email_address
 export GIT_AUTHOR_EMAIL
 
-# Clone 1 (trivial merge):
-#
-# A1--A2  <-- origin/master
-#  \   \
-#   B1--M  <-- topic
-#    \
-#     B2  <-- origin/topic
-#
 # Clone 2 (conflicting merge):
 #
 # A1--A2--B3   <-- origin/master
@@ -37,15 +34,7 @@ export GIT_AUTHOR_EMAIL
 #      \
 #       B2     <-- origin/topic
 #
-# Clone 4 (merge using second parent as base):
-#
-# A1--A2--B3   <-- origin/master
-#  \
-#   B1--A3--M  <-- topic
-#    \     /
-#     \--A4    <-- topic2
-#      \
-#       B2     <-- origin/topic
+# Clone 4 (same as Clone 3)
 
 test_expect_success 'setup for merge-preserving rebase' \
 	'echo First > A &&
@@ -58,20 +47,6 @@ test_expect_success 'setup for merge-preserving rebase' \
 	git checkout -f master &&
 	echo Third >> A &&
 	git commit -a -m "Modify A2" &&
-
-	git clone ./. clone1 &&
-	(cd clone1 &&
-	git checkout -b topic origin/topic &&
-	git merge origin/master
-	) &&
-
-	git clone ./. clone4 &&
-	(
-		cd clone4 &&
-		git checkout -b topic origin/topic &&
-		git merge origin/master
-	) &&
-
 	echo Fifth > B &&
 	git add B &&
 	git commit -m "Add different B" &&
@@ -96,19 +71,19 @@ test_expect_success 'setup for merge-preserving rebase' \
 		git merge --no-ff topic2
 	) &&
 
+	git clone ./. clone4 &&
+	(
+		cd clone4 &&
+		git checkout -b topic2 origin/topic &&
+		echo Sixth > A &&
+		git commit -a -m "Modify A3" &&
+		git checkout -b topic origin/topic &&
+		git merge --no-ff topic2
+	) &&
+
 	git checkout topic &&
 	echo Fourth >> B &&
 	git commit -a -m "Modify B2"
-'
-
-test_expect_success 'rebase -p fakes interactive rebase' '
-	(
-	cd clone1 &&
-	git fetch &&
-	git rebase -p origin/topic &&
-	test 1 = $(git rev-list --all --pretty=oneline | grep "Modify A" | wc -l) &&
-	test 1 = $(git rev-list --all --pretty=oneline | grep "Merge remote-tracking branch " | wc -l)
-	)
 '
 
 test_expect_success '--continue works after a conflict' '
@@ -138,14 +113,14 @@ test_expect_success 'rebase -p preserves no-ff merges' '
 	)
 '
 
-test_expect_success 'rebase -p works when base inside second parent' '
+test_expect_success 'rebase -p ignores merge.log config' '
 	(
 	cd clone4 &&
 	git fetch &&
-	git rebase -p HEAD^2 &&
-	test 1 = $(git rev-list --all --pretty=oneline | grep "Modify A" | wc -l) &&
-	test 1 = $(git rev-list --all --pretty=oneline | grep "Modify B" | wc -l) &&
-	test 1 = $(git rev-list --all --pretty=oneline | grep "Merge remote-tracking branch " | wc -l)
+	git -c merge.log=1 rebase -p origin/topic &&
+	echo >expected &&
+	git log --format="%b" -1 >current &&
+	test_cmp expected current
 	)
 '
 

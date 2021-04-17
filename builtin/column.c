@@ -1,12 +1,13 @@
 #include "builtin.h"
 #include "cache.h"
+#include "config.h"
 #include "strbuf.h"
 #include "parse-options.h"
 #include "string-list.h"
 #include "column.h"
 
 static const char * const builtin_column_usage[] = {
-	N_("git column [options]"),
+	N_("git column [<options>]"),
 	NULL
 };
 static unsigned int colopts;
@@ -34,16 +35,15 @@ int cmd_column(int argc, const char **argv, const char *prefix)
 	};
 
 	/* This one is special and must be the first one */
-	if (argc > 1 && !prefixcmp(argv[1], "--command=")) {
+	if (argc > 1 && starts_with(argv[1], "--command=")) {
 		command = argv[1] + 10;
 		git_config(column_config, (void *)command);
 	} else
 		git_config(column_config, NULL);
 
 	memset(&copts, 0, sizeof(copts));
-	copts.width = term_columns();
 	copts.padding = 1;
-	argc = parse_options(argc, argv, "", options, builtin_column_usage, 0);
+	argc = parse_options(argc, argv, prefix, options, builtin_column_usage, 0);
 	if (argc)
 		usage_with_options(builtin_column_usage, options);
 	if (real_command || command) {
@@ -51,7 +51,7 @@ int cmd_column(int argc, const char **argv, const char *prefix)
 			die(_("--command must be the first argument"));
 	}
 	finalize_colopts(&colopts, -1);
-	while (!strbuf_getline(&sb, stdin, '\n'))
+	while (!strbuf_getline(&sb, stdin))
 		string_list_append(&list, sb.buf);
 
 	print_columns(&list, colopts, &copts);

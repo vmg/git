@@ -1,4 +1,5 @@
 #include "cache.h"
+#include "object-store.h"
 #include "commit.h"
 #include "blob.h"
 #include "diff.h"
@@ -9,16 +10,35 @@
 #include "log-tree.h"
 #include "refs.h"
 #include "userdiff.h"
-#include "sha1-array.h"
+#include "oid-array.h"
+#include "revision.h"
 
-static struct combine_diff_path *intersect_paths(struct combine_diff_path *curr, int n, int num_parent)
+static int compare_paths(const struct combine_diff_path *one,
+			  const struct diff_filespec *two)
+{
+	if (!S_ISDIR(one->mode) && !S_ISDIR(two->mode))
+		return strcmp(one->path, two->path);
+
+	return base_name_compare(one->path, strlen(one->path), one->mode,
+				 two->path, strlen(two->path), two->mode);
+}
+
+static int filename_changed(char status)
+{
+	return status == 'R' || status == 'C';
+}
+
+static struct combine_diff_path *intersect_paths(
+	struct combine_diff_path *curr,
+	int n,
+	int num_parent,
+	int combined_all_paths)
 {
 	struct diff_queue_struct *q = &diff_queued_diff;
-	struct combine_diff_path *p;
-	int i;
+	struct combine_diff_path *p, **tail = &curr;
+	int i, j, cmp;
 
 	if (!n) {
-		struct combine_diff_path *list = NULL, **tail = &list;
 		for (i = 0; i < q->nr; i++) {
 			int len;
 			const char *path;
@@ -30,44 +50,64 @@ static struct combine_diff_path *intersect_paths(struct combine_diff_path *curr,
 			p->path = (char *) &(p->parent[num_parent]);
 			memcpy(p->path, path, len);
 			p->path[len] = 0;
-			p->len = len;
 			p->next = NULL;
 			memset(p->parent, 0,
 			       sizeof(p->parent[0]) * num_parent);
 
-			hashcpy(p->sha1, q->queue[i]->two->sha1);
+			oidcpy(&p->oid, &q->queue[i]->two->oid);
 			p->mode = q->queue[i]->two->mode;
-			hashcpy(p->parent[n].sha1, q->queue[i]->one->sha1);
+			oidcpy(&p->parent[n].oid, &q->queue[i]->one->oid);
 			p->parent[n].mode = q->queue[i]->one->mode;
 			p->parent[n].status = q->queue[i]->status;
+
+			if (combined_all_paths &&
+			    filename_changed(p->parent[n].status)) {
+				strbuf_init(&p->parent[n].path, 0);
+				strbuf_addstr(&p->parent[n].path,
+					      q->queue[i]->one->path);
+			}
 			*tail = p;
 			tail = &p->next;
 		}
-		return list;
+		return curr;
 	}
 
-	for (p = curr; p; p = p->next) {
-		int found = 0;
-		if (!p->len)
-			continue;
-		for (i = 0; i < q->nr; i++) {
-			const char *path;
-			int len;
+	/*
+	 * paths in curr (linked list) and q->queue[] (array) are
+	 * both sorted in the tree order.
+	 */
+	i = 0;
+	while ((p = *tail) != NULL) {
+		cmp = ((i >= q->nr)
+		       ? -1 : compare_paths(p, q->queue[i]->two));
 
-			if (diff_unmodified_pair(q->queue[i]))
-				continue;
-			path = q->queue[i]->two->path;
-			len = strlen(path);
-			if (len == p->len && !memcmp(path, p->path, len)) {
-				found = 1;
-				hashcpy(p->parent[n].sha1, q->queue[i]->one->sha1);
-				p->parent[n].mode = q->queue[i]->one->mode;
-				p->parent[n].status = q->queue[i]->status;
-				break;
-			}
+		if (cmp < 0) {
+			/* p->path not in q->queue[]; drop it */
+			*tail = p->next;
+			for (j = 0; j < num_parent; j++)
+				if (combined_all_paths &&
+				    filename_changed(p->parent[j].status))
+					strbuf_release(&p->parent[j].path);
+			free(p);
+			continue;
 		}
-		if (!found)
-			p->len = 0;
+
+		if (cmp > 0) {
+			/* q->queue[i] not in p->path; skip it */
+			i++;
+			continue;
+		}
+
+		oidcpy(&p->parent[n].oid, &q->queue[i]->one->oid);
+		p->parent[n].mode = q->queue[i]->one->mode;
+		p->parent[n].status = q->queue[i]->status;
+		if (combined_all_paths &&
+		    filename_changed(p->parent[n].status))
+			strbuf_addstr(&p->parent[n].path,
+				      q->queue[i]->one->path);
+
+		tail = &p->next;
+		i++;
 	}
 	return curr;
 }
@@ -147,7 +187,7 @@ enum coalesce_direction { MATCH, BASE, NEW };
 
 /* Coalesce new lines into base by finding LCS */
 static struct lline *coalesce_lines(struct lline *base, int *lenbase,
-				    struct lline *new, int lennew,
+				    struct lline *newline, int lennew,
 				    unsigned long parent, long flags)
 {
 	int **lcs;
@@ -155,17 +195,17 @@ static struct lline *coalesce_lines(struct lline *base, int *lenbase,
 	struct lline *baseend, *newend = NULL;
 	int i, j, origbaselen = *lenbase;
 
-	if (new == NULL)
+	if (newline == NULL)
 		return base;
 
 	if (base == NULL) {
 		*lenbase = lennew;
-		return new;
+		return newline;
 	}
 
 	/*
 	 * Coalesce new lines into base by finding the LCS
-	 * - Create the table to run dynamic programing
+	 * - Create the table to run dynamic programming
 	 * - Compute the LCS
 	 * - Then reverse read the direction structure:
 	 *   - If we have MATCH, assign parent to base flag, and consume
@@ -174,18 +214,18 @@ static struct lline *coalesce_lines(struct lline *base, int *lenbase,
 	 *   - Else if we have NEW, insert newend lline into base and
 	 *   consume newend
 	 */
-	lcs = xcalloc(origbaselen + 1, sizeof(int*));
-	directions = xcalloc(origbaselen + 1, sizeof(enum coalesce_direction*));
+	lcs = xcalloc(st_add(origbaselen, 1), sizeof(int*));
+	directions = xcalloc(st_add(origbaselen, 1), sizeof(enum coalesce_direction*));
 	for (i = 0; i < origbaselen + 1; i++) {
-		lcs[i] = xcalloc(lennew + 1, sizeof(int));
-		directions[i] = xcalloc(lennew + 1, sizeof(enum coalesce_direction));
+		lcs[i] = xcalloc(st_add(lennew, 1), sizeof(int));
+		directions[i] = xcalloc(st_add(lennew, 1), sizeof(enum coalesce_direction));
 		directions[i][0] = BASE;
 	}
 	for (j = 1; j < lennew + 1; j++)
 		directions[0][j] = NEW;
 
 	for (i = 1, baseend = base; i < origbaselen + 1; i++) {
-		for (j = 1, newend = new; j < lennew + 1; j++) {
+		for (j = 1, newend = newline; j < lennew + 1; j++) {
 			if (match_string_spaces(baseend->line, baseend->len,
 						newend->line, newend->len, flags)) {
 				lcs[i][j] = lcs[i - 1][j - 1] + 1;
@@ -226,7 +266,7 @@ static struct lline *coalesce_lines(struct lline *base, int *lenbase,
 			if (lline->prev)
 				lline->prev->next = lline->next;
 			else
-				new = lline->next;
+				newline = lline->next;
 			if (lline->next)
 				lline->next->prev = lline->prev;
 
@@ -255,7 +295,7 @@ static struct lline *coalesce_lines(struct lline *base, int *lenbase,
 		}
 	}
 
-	newend = new;
+	newend = newline;
 	while (newend) {
 		struct lline *lline = newend;
 		newend = newend->next;
@@ -269,7 +309,8 @@ static struct lline *coalesce_lines(struct lline *base, int *lenbase,
 	return base;
 }
 
-static char *grab_blob(const unsigned char *sha1, unsigned int mode,
+static char *grab_blob(struct repository *r,
+		       const struct object_id *oid, unsigned int mode,
 		       unsigned long *size, struct userdiff_driver *textconv,
 		       const char *path)
 {
@@ -277,22 +318,23 @@ static char *grab_blob(const unsigned char *sha1, unsigned int mode,
 	enum object_type type;
 
 	if (S_ISGITLINK(mode)) {
-		blob = xmalloc(100);
-		*size = snprintf(blob, 100,
-				 "Subproject commit %s\n", sha1_to_hex(sha1));
-	} else if (is_null_sha1(sha1)) {
+		struct strbuf buf = STRBUF_INIT;
+		strbuf_addf(&buf, "Subproject commit %s\n", oid_to_hex(oid));
+		*size = buf.len;
+		blob = strbuf_detach(&buf, NULL);
+	} else if (is_null_oid(oid)) {
 		/* deleted blob */
 		*size = 0;
 		return xcalloc(1, 1);
 	} else if (textconv) {
 		struct diff_filespec *df = alloc_filespec(path);
-		fill_filespec(df, sha1, 1, mode);
-		*size = fill_textconv(textconv, df, &blob);
+		fill_filespec(df, oid, 1, mode);
+		*size = fill_textconv(r, textconv, df, &blob);
 		free_filespec(df);
 	} else {
-		blob = read_sha1_file(sha1, &type, size);
+		blob = read_object_file(oid, &type, size);
 		if (type != OBJ_BLOB)
-			die("object '%s' is not a blob!", sha1_to_hex(sha1));
+			die("object '%s' is not a blob!", oid_to_hex(oid));
 	}
 	return blob;
 }
@@ -304,7 +346,7 @@ static void append_lost(struct sline *sline, int n, const char *line, int len)
 	if (line[len-1] == '\n')
 		len--;
 
-	lline = xmalloc(sizeof(*lline) + len + 1);
+	FLEX_ALLOC_MEM(lline, line, line, len);
 	lline->len = len;
 	lline->next = NULL;
 	lline->prev = sline->plost.lost_tail;
@@ -315,8 +357,6 @@ static void append_lost(struct sline *sline, int n, const char *line, int len)
 	sline->plost.lost_tail = lline;
 	sline->plost.len++;
 	lline->parent_map = this_mask;
-	memcpy(lline->line, line, len);
-	lline->line[len] = 0;
 }
 
 struct combine_diff_state {
@@ -329,38 +369,43 @@ struct combine_diff_state {
 	struct sline *lost_bucket;
 };
 
+static void consume_hunk(void *state_,
+			 long ob, long on,
+			 long nb, long nn,
+			 const char *funcline, long funclen)
+{
+	struct combine_diff_state *state = state_;
+
+	state->ob = ob;
+	state->on = on;
+	state->nb = nb;
+	state->nn = nn;
+	state->lno = state->nb;
+	if (state->nn == 0) {
+		/* @@ -X,Y +N,0 @@ removed Y lines
+		 * that would have come *after* line N
+		 * in the result.  Our lost buckets hang
+		 * to the line after the removed lines,
+		 *
+		 * Note that this is correct even when N == 0,
+		 * in which case the hunk removes the first
+		 * line in the file.
+		 */
+		state->lost_bucket = &state->sline[state->nb];
+		if (!state->nb)
+			state->nb = 1;
+	} else {
+		state->lost_bucket = &state->sline[state->nb-1];
+	}
+	if (!state->sline[state->nb-1].p_lno)
+		state->sline[state->nb-1].p_lno =
+			xcalloc(state->num_parent, sizeof(unsigned long));
+	state->sline[state->nb-1].p_lno[state->n] = state->ob;
+}
+
 static void consume_line(void *state_, char *line, unsigned long len)
 {
 	struct combine_diff_state *state = state_;
-	if (5 < len && !memcmp("@@ -", line, 4)) {
-		if (parse_hunk_header(line, len,
-				      &state->ob, &state->on,
-				      &state->nb, &state->nn))
-			return;
-		state->lno = state->nb;
-		if (state->nn == 0) {
-			/* @@ -X,Y +N,0 @@ removed Y lines
-			 * that would have come *after* line N
-			 * in the result.  Our lost buckets hang
-			 * to the line after the removed lines,
-			 *
-			 * Note that this is correct even when N == 0,
-			 * in which case the hunk removes the first
-			 * line in the file.
-			 */
-			state->lost_bucket = &state->sline[state->nb];
-			if (!state->nb)
-				state->nb = 1;
-		} else {
-			state->lost_bucket = &state->sline[state->nb-1];
-		}
-		if (!state->sline[state->nb-1].p_lno)
-			state->sline[state->nb-1].p_lno =
-				xcalloc(state->num_parent,
-					sizeof(unsigned long));
-		state->sline[state->nb-1].p_lno[state->n] = state->ob;
-		return;
-	}
 	if (!state->lost_bucket)
 		return; /* not in any hunk yet */
 	switch (line[0]) {
@@ -374,7 +419,8 @@ static void consume_line(void *state_, char *line, unsigned long len)
 	}
 }
 
-static void combine_diff(const unsigned char *parent, unsigned int mode,
+static void combine_diff(struct repository *r,
+			 const struct object_id *parent, unsigned int mode,
 			 mmfile_t *result_file,
 			 struct sline *sline, unsigned int cnt, int n,
 			 int num_parent, int result_deleted,
@@ -392,7 +438,7 @@ static void combine_diff(const unsigned char *parent, unsigned int mode,
 	if (result_deleted)
 		return; /* result deleted */
 
-	parent_file.ptr = grab_blob(parent, mode, &sz, textconv, path);
+	parent_file.ptr = grab_blob(r, parent, mode, &sz, textconv, path);
 	parent_file.size = sz;
 	memset(&xpp, 0, sizeof(xpp));
 	xpp.flags = flags;
@@ -404,8 +450,10 @@ static void combine_diff(const unsigned char *parent, unsigned int mode,
 	state.num_parent = num_parent;
 	state.n = n;
 
-	xdi_diff_outf(&parent_file, result_file, consume_line, &state,
-		      &xpp, &xecfg);
+	if (xdi_diff_outf(&parent_file, result_file, consume_hunk,
+			  consume_line, &state, &xpp, &xecfg))
+		die("unable to generate combined diff for %s",
+		    oid_to_hex(parent));
 	free(parent_file.ptr);
 
 	/* Assign line numbers for this parent.
@@ -518,8 +566,11 @@ static int give_context(struct sline *sline, unsigned long cnt, int num_parent)
 		unsigned long k;
 
 		/* Paint a few lines before the first interesting line. */
-		while (j < i)
-			sline[j++].flag |= mark | no_pre_delete;
+		while (j < i) {
+			if (!(sline[j].flag & mark))
+				sline[j].flag |= no_pre_delete;
+			sline[j++].flag |= mark;
+		}
 
 	again:
 		/* we know up to i is to be included.  where does the
@@ -712,7 +763,7 @@ static void dump_sline(struct sline *sline, const char *line_prefix,
 	const char *c_func = diff_get_color(use_color, DIFF_FUNCINFO);
 	const char *c_new = diff_get_color(use_color, DIFF_FILE_NEW);
 	const char *c_old = diff_get_color(use_color, DIFF_FILE_OLD);
-	const char *c_plain = diff_get_color(use_color, DIFF_PLAIN);
+	const char *c_context = diff_get_color(use_color, DIFF_CONTEXT);
 	const char *c_reset = diff_get_color(use_color, DIFF_RESET);
 
 	if (result_deleted)
@@ -775,7 +826,7 @@ static void dump_sline(struct sline *sline, const char *line_prefix,
 			}
 			if (comment_end)
 				printf("%s%s %s%s", c_reset,
-						    c_plain, c_reset,
+						    c_context, c_reset,
 						    c_func);
 			for (i = 0; i < comment_end; i++)
 				putchar(hunk_comment[i]);
@@ -810,7 +861,7 @@ static void dump_sline(struct sline *sline, const char *line_prefix,
 				 */
 				if (!context)
 					continue;
-				fputs(c_plain, stdout);
+				fputs(c_context, stdout);
 			}
 			else
 				fputs(c_new, stdout);
@@ -879,7 +930,7 @@ static void show_combined_header(struct combine_diff_path *elem,
 				 int show_file_header)
 {
 	struct diff_options *opt = &rev->diffopt;
-	int abbrev = DIFF_OPT_TST(opt, FULL_INDEX) ? 40 : DEFAULT_ABBREV;
+	int abbrev = opt->flags.full_index ? the_hash_algo->hexsz : DEFAULT_ABBREV;
 	const char *a_prefix = opt->a_prefix ? opt->a_prefix : "a/";
 	const char *b_prefix = opt->b_prefix ? opt->b_prefix : "b/";
 	const char *c_meta = diff_get_color_opt(opt, DIFF_METAINFO);
@@ -896,11 +947,11 @@ static void show_combined_header(struct combine_diff_path *elem,
 			 "", elem->path, line_prefix, c_meta, c_reset);
 	printf("%s%sindex ", line_prefix, c_meta);
 	for (i = 0; i < num_parent; i++) {
-		abb = find_unique_abbrev(elem->parent[i].sha1,
+		abb = find_unique_abbrev(&elem->parent[i].oid,
 					 abbrev);
 		printf("%s%s", i ? "," : "", abb);
 	}
-	abb = find_unique_abbrev(elem->sha1, abbrev);
+	abb = find_unique_abbrev(&elem->oid, abbrev);
 	printf("..%s%s\n", abb, c_reset);
 
 	if (mode_differs) {
@@ -933,12 +984,25 @@ static void show_combined_header(struct combine_diff_path *elem,
 	if (!show_file_header)
 		return;
 
-	if (added)
-		dump_quoted_path("--- ", "", "/dev/null",
-				 line_prefix, c_meta, c_reset);
-	else
-		dump_quoted_path("--- ", a_prefix, elem->path,
-				 line_prefix, c_meta, c_reset);
+	if (rev->combined_all_paths) {
+		for (i = 0; i < num_parent; i++) {
+			char *path = filename_changed(elem->parent[i].status)
+				? elem->parent[i].path.buf : elem->path;
+			if (elem->parent[i].status == DIFF_STATUS_ADDED)
+				dump_quoted_path("--- ", "", "/dev/null",
+						 line_prefix, c_meta, c_reset);
+			else
+				dump_quoted_path("--- ", a_prefix, path,
+						 line_prefix, c_meta, c_reset);
+		}
+	} else {
+		if (added)
+			dump_quoted_path("--- ", "", "/dev/null",
+					 line_prefix, c_meta, c_reset);
+		else
+			dump_quoted_path("--- ", a_prefix, elem->path,
+					 line_prefix, c_meta, c_reset);
+	}
 	if (deleted)
 		dump_quoted_path("+++ ", "", "/dev/null",
 				 line_prefix, c_meta, c_reset);
@@ -965,15 +1029,15 @@ static void show_patch_diff(struct combine_diff_path *elem, int num_parent,
 	const char *line_prefix = diff_line_prefix(opt);
 
 	context = opt->context;
-	userdiff = userdiff_find_by_path(elem->path);
+	userdiff = userdiff_find_by_path(opt->repo->index, elem->path);
 	if (!userdiff)
 		userdiff = userdiff_find_by_name("default");
-	if (DIFF_OPT_TST(opt, ALLOW_TEXTCONV))
-		textconv = userdiff_get_textconv(userdiff);
+	if (opt->flags.allow_textconv)
+		textconv = userdiff_get_textconv(opt->repo, userdiff);
 
 	/* Read the result of merge first */
 	if (!working_tree_file)
-		result = grab_blob(elem->sha1, elem->mode, &result_size,
+		result = grab_blob(opt->repo, &elem->oid, elem->mode, &result_size,
 				   textconv, elem->path);
 	else {
 		/* Used by diff-tree to read from the working tree */
@@ -987,25 +1051,25 @@ static void show_patch_diff(struct combine_diff_path *elem, int num_parent,
 			struct strbuf buf = STRBUF_INIT;
 
 			if (strbuf_readlink(&buf, elem->path, st.st_size) < 0) {
-				error("readlink(%s): %s", elem->path,
-				      strerror(errno));
+				error_errno("readlink(%s)", elem->path);
 				return;
 			}
 			result_size = buf.len;
 			result = strbuf_detach(&buf, NULL);
 			elem->mode = canon_mode(st.st_mode);
 		} else if (S_ISDIR(st.st_mode)) {
-			unsigned char sha1[20];
-			if (resolve_gitlink_ref(elem->path, "HEAD", sha1) < 0)
-				result = grab_blob(elem->sha1, elem->mode,
-						   &result_size, NULL, NULL);
+			struct object_id oid;
+			if (resolve_gitlink_ref(elem->path, "HEAD", &oid) < 0)
+				result = grab_blob(opt->repo, &elem->oid,
+						   elem->mode, &result_size,
+						   NULL, NULL);
 			else
-				result = grab_blob(sha1, elem->mode,
+				result = grab_blob(opt->repo, &oid, elem->mode,
 						   &result_size, NULL, NULL);
 		} else if (textconv) {
 			struct diff_filespec *df = alloc_filespec(elem->path);
-			fill_filespec(df, null_sha1, 0, st.st_mode);
-			result_size = fill_textconv(textconv, df, &result);
+			fill_filespec(df, &null_oid, 0, st.st_mode);
+			result_size = fill_textconv(opt->repo, textconv, df, &result);
 			free_filespec(df);
 		} else if (0 <= (fd = open(elem->path, O_RDONLY))) {
 			size_t len = xsize_t(st.st_size);
@@ -1023,7 +1087,7 @@ static void show_patch_diff(struct combine_diff_path *elem, int num_parent,
 				elem->mode = canon_mode(S_IFLNK);
 
 			result_size = len;
-			result = xmalloc(len + 1);
+			result = xmallocz(len);
 
 			done = read_in_full(fd, result, len);
 			if (done < 0)
@@ -1031,13 +1095,12 @@ static void show_patch_diff(struct combine_diff_path *elem, int num_parent,
 			else if (done < len)
 				die("early EOF '%s'", elem->path);
 
-			result[len] = 0;
-
 			/* If not a fake symlink, apply filters, e.g. autocrlf */
 			if (is_file) {
 				struct strbuf buf = STRBUF_INIT;
 
-				if (convert_to_git(elem->path, result, len, &buf, safe_crlf)) {
+				if (convert_to_git(rev->diffopt.repo->index,
+						   elem->path, result, len, &buf, global_conv_flags_eol)) {
 					free(result);
 					result = strbuf_detach(&buf, &len);
 					result_size = len;
@@ -1072,7 +1135,8 @@ static void show_patch_diff(struct combine_diff_path *elem, int num_parent,
 		for (i = 0; !is_binary && i < num_parent; i++) {
 			char *buf;
 			unsigned long size;
-			buf = grab_blob(elem->parent[i].sha1,
+			buf = grab_blob(opt->repo,
+					&elem->parent[i].oid,
 					elem->parent[i].mode,
 					&size, NULL, NULL);
 			if (buffer_is_binary(buf, size))
@@ -1095,7 +1159,7 @@ static void show_patch_diff(struct combine_diff_path *elem, int num_parent,
 	if (result_size && result[result_size-1] != '\n')
 		cnt++; /* incomplete line */
 
-	sline = xcalloc(cnt+2, sizeof(*sline));
+	sline = xcalloc(st_add(cnt, 2), sizeof(*sline));
 	sline[0].bol = result;
 	for (lno = 0, cp = result; cp < result + result_size; cp++) {
 		if (*cp == '\n') {
@@ -1114,21 +1178,22 @@ static void show_patch_diff(struct combine_diff_path *elem, int num_parent,
 	/* Even p_lno[cnt+1] is valid -- that is for the end line number
 	 * for deletion hunk at the end.
 	 */
-	sline[0].p_lno = xcalloc((cnt+2) * num_parent, sizeof(unsigned long));
+	sline[0].p_lno = xcalloc(st_mult(st_add(cnt, 2), num_parent), sizeof(unsigned long));
 	for (lno = 0; lno <= cnt; lno++)
 		sline[lno+1].p_lno = sline[lno].p_lno + num_parent;
 
 	for (i = 0; i < num_parent; i++) {
 		int j;
 		for (j = 0; j < i; j++) {
-			if (!hashcmp(elem->parent[i].sha1,
-				     elem->parent[j].sha1)) {
+			if (oideq(&elem->parent[i].oid,
+				  &elem->parent[j].oid)) {
 				reuse_combine_diff(sline, cnt, i, j);
 				break;
 			}
 		}
 		if (i <= j)
-			combine_diff(elem->parent[i].sha1,
+			combine_diff(opt->repo,
+				     &elem->parent[i].oid,
 				     elem->parent[i].mode,
 				     &result_file, sline,
 				     cnt, i, num_parent, result_deleted,
@@ -1188,9 +1253,9 @@ static void show_raw_diff(struct combine_diff_path *p, int num_parent, struct re
 
 		/* Show sha1's */
 		for (i = 0; i < num_parent; i++)
-			printf(" %s", diff_unique_abbrev(p->parent[i].sha1,
-							 opt->abbrev));
-		printf(" %s ", diff_unique_abbrev(p->sha1, opt->abbrev));
+			printf(" %s", diff_aligned_abbrev(&p->parent[i].oid,
+							  opt->abbrev));
+		printf(" %s ", diff_aligned_abbrev(&p->oid, opt->abbrev));
 	}
 
 	if (opt->output_format & (DIFF_FORMAT_RAW | DIFF_FORMAT_NAME_STATUS)) {
@@ -1199,6 +1264,15 @@ static void show_raw_diff(struct combine_diff_path *p, int num_parent, struct re
 		putchar(inter_name_termination);
 	}
 
+	for (i = 0; i < num_parent; i++)
+		if (rev->combined_all_paths) {
+			if (filename_changed(p->parent[i].status))
+				write_name_quoted(p->parent[i].path.buf, stdout,
+						  inter_name_termination);
+			else
+				write_name_quoted(p->path, stdout,
+						  inter_name_termination);
+		}
 	write_name_quoted(p->path, stdout, line_termination);
 }
 
@@ -1215,8 +1289,6 @@ void show_combined_diff(struct combine_diff_path *p,
 {
 	struct diff_options *opt = &rev->diffopt;
 
-	if (!p->len)
-		return;
 	if (opt->output_format & (DIFF_FORMAT_RAW |
 				  DIFF_FORMAT_NAME |
 				  DIFF_FORMAT_NAME_STATUS))
@@ -1248,23 +1320,23 @@ static struct diff_filepair *combined_pair(struct combine_diff_path *p,
 	struct diff_filespec *pool;
 
 	pair = xmalloc(sizeof(*pair));
-	pool = xcalloc(num_parent + 1, sizeof(struct diff_filespec));
+	pool = xcalloc(st_add(num_parent, 1), sizeof(struct diff_filespec));
 	pair->one = pool + 1;
 	pair->two = pool;
 
 	for (i = 0; i < num_parent; i++) {
 		pair->one[i].path = p->path;
 		pair->one[i].mode = p->parent[i].mode;
-		hashcpy(pair->one[i].sha1, p->parent[i].sha1);
-		pair->one[i].sha1_valid = !is_null_sha1(p->parent[i].sha1);
+		oidcpy(&pair->one[i].oid, &p->parent[i].oid);
+		pair->one[i].oid_valid = !is_null_oid(&p->parent[i].oid);
 		pair->one[i].has_more_entries = 1;
 	}
 	pair->one[num_parent - 1].has_more_entries = 0;
 
 	pair->two->path = p->path;
 	pair->two->mode = p->mode;
-	hashcpy(pair->two->sha1, p->sha1);
-	pair->two->sha1_valid = !is_null_sha1(p->sha1);
+	oidcpy(&pair->two->oid, &p->oid);
+	pair->two->oid_valid = !is_null_oid(&p->oid);
 	return pair;
 }
 
@@ -1280,76 +1352,226 @@ static void handle_combined_callback(struct diff_options *opt,
 	q.queue = xcalloc(num_paths, sizeof(struct diff_filepair *));
 	q.alloc = num_paths;
 	q.nr = num_paths;
-	for (i = 0, p = paths; p; p = p->next) {
-		if (!p->len)
-			continue;
+	for (i = 0, p = paths; p; p = p->next)
 		q.queue[i++] = combined_pair(p, num_parent);
-	}
 	opt->format_callback(&q, opt, opt->format_callback_data);
 	for (i = 0; i < num_paths; i++)
 		free_combined_pair(q.queue[i]);
 	free(q.queue);
 }
 
-void diff_tree_combined(const unsigned char *sha1,
-			const struct sha1_array *parents,
+static const char *path_path(void *obj)
+{
+	struct combine_diff_path *path = (struct combine_diff_path *)obj;
+
+	return path->path;
+}
+
+/*
+ * Diff stat formats which we always compute solely against the first parent.
+ */
+#define STAT_FORMAT_MASK (DIFF_FORMAT_NUMSTAT \
+			  | DIFF_FORMAT_SHORTSTAT \
+			  | DIFF_FORMAT_SUMMARY \
+			  | DIFF_FORMAT_DIRSTAT \
+			  | DIFF_FORMAT_DIFFSTAT)
+
+/* find set of paths that every parent touches */
+static struct combine_diff_path *find_paths_generic(const struct object_id *oid,
+	const struct oid_array *parents,
+	struct diff_options *opt,
+	int combined_all_paths)
+{
+	struct combine_diff_path *paths = NULL;
+	int i, num_parent = parents->nr;
+
+	int output_format = opt->output_format;
+	const char *orderfile = opt->orderfile;
+
+	opt->output_format = DIFF_FORMAT_NO_OUTPUT;
+	/* tell diff_tree to emit paths in sorted (=tree) order */
+	opt->orderfile = NULL;
+
+	/* D(A,P1...Pn) = D(A,P1) ^ ... ^ D(A,Pn)  (wrt paths) */
+	for (i = 0; i < num_parent; i++) {
+		/*
+		 * show stat against the first parent even when doing
+		 * combined diff.
+		 */
+		int stat_opt = output_format & STAT_FORMAT_MASK;
+		if (i == 0 && stat_opt)
+			opt->output_format = stat_opt;
+		else
+			opt->output_format = DIFF_FORMAT_NO_OUTPUT;
+		diff_tree_oid(&parents->oid[i], oid, "", opt);
+		diffcore_std(opt);
+		paths = intersect_paths(paths, i, num_parent,
+					combined_all_paths);
+
+		/* if showing diff, show it in requested order */
+		if (opt->output_format != DIFF_FORMAT_NO_OUTPUT &&
+		    orderfile) {
+			diffcore_order(orderfile);
+		}
+
+		diff_flush(opt);
+	}
+
+	opt->output_format = output_format;
+	opt->orderfile = orderfile;
+	return paths;
+}
+
+
+/*
+ * find set of paths that everybody touches, assuming diff is run without
+ * rename/copy detection, etc, comparing all trees simultaneously (= faster).
+ */
+static struct combine_diff_path *find_paths_multitree(
+	const struct object_id *oid, const struct oid_array *parents,
+	struct diff_options *opt)
+{
+	int i, nparent = parents->nr;
+	const struct object_id **parents_oid;
+	struct combine_diff_path paths_head;
+	struct strbuf base;
+
+	ALLOC_ARRAY(parents_oid, nparent);
+	for (i = 0; i < nparent; i++)
+		parents_oid[i] = &parents->oid[i];
+
+	/* fake list head, so worker can assume it is non-NULL */
+	paths_head.next = NULL;
+
+	strbuf_init(&base, PATH_MAX);
+	diff_tree_paths(&paths_head, oid, parents_oid, nparent, &base, opt);
+
+	strbuf_release(&base);
+	free(parents_oid);
+	return paths_head.next;
+}
+
+
+void diff_tree_combined(const struct object_id *oid,
+			const struct oid_array *parents,
 			int dense,
 			struct rev_info *rev)
 {
 	struct diff_options *opt = &rev->diffopt;
 	struct diff_options diffopts;
-	struct combine_diff_path *p, *paths = NULL;
+	struct combine_diff_path *p, *paths;
 	int i, num_paths, needsep, show_log_first, num_parent = parents->nr;
+	int need_generic_pathscan;
 
-	diffopts = *opt;
-	diffopts.output_format = DIFF_FORMAT_NO_OUTPUT;
-	DIFF_OPT_SET(&diffopts, RECURSIVE);
-	DIFF_OPT_CLR(&diffopts, ALLOW_EXTERNAL);
+	/* nothing to do, if no parents */
+	if (!num_parent)
+		return;
 
 	show_log_first = !!rev->loginfo && !rev->no_commit_id;
 	needsep = 0;
-	/* find set of paths that everybody touches */
-	for (i = 0; i < num_parent; i++) {
-		/* show stat against the first parent even
+	if (show_log_first) {
+		show_log(rev);
+
+		if (rev->verbose_header && opt->output_format &&
+		    opt->output_format != DIFF_FORMAT_NO_OUTPUT &&
+		    !commit_format_is_empty(rev->commit_format))
+			printf("%s%c", diff_line_prefix(opt),
+			       opt->line_termination);
+	}
+
+	diffopts = *opt;
+	copy_pathspec(&diffopts.pathspec, &opt->pathspec);
+	diffopts.flags.recursive = 1;
+	diffopts.flags.allow_external = 0;
+
+	/* find set of paths that everybody touches
+	 *
+	 * NOTE
+	 *
+	 * Diffcore transformations are bound to diff_filespec and logic
+	 * comparing two entries - i.e. they do not apply directly to combine
+	 * diff.
+	 *
+	 * If some of such transformations is requested - we launch generic
+	 * path scanning, which works significantly slower compared to
+	 * simultaneous all-trees-in-one-go scan in find_paths_multitree().
+	 *
+	 * TODO some of the filters could be ported to work on
+	 * combine_diff_paths - i.e. all functionality that skips paths, so in
+	 * theory, we could end up having only multitree path scanning.
+	 *
+	 * NOTE please keep this semantically in sync with diffcore_std()
+	 */
+	need_generic_pathscan = opt->skip_stat_unmatch	||
+			opt->flags.follow_renames	||
+			opt->break_opt != -1	||
+			opt->detect_rename	||
+			(opt->pickaxe_opts & DIFF_PICKAXE_KINDS_MASK)	||
+			opt->filter;
+
+
+	if (need_generic_pathscan) {
+		/*
+		 * NOTE generic case also handles --stat, as it computes
+		 * diff(sha1,parent_i) for all i to do the job, specifically
+		 * for parent0.
+		 */
+		paths = find_paths_generic(oid, parents, &diffopts,
+					   rev->combined_all_paths);
+	}
+	else {
+		int stat_opt;
+		paths = find_paths_multitree(oid, parents, &diffopts);
+
+		/*
+		 * show stat against the first parent even
 		 * when doing combined diff.
 		 */
-		int stat_opt = (opt->output_format &
-				(DIFF_FORMAT_NUMSTAT|DIFF_FORMAT_DIFFSTAT));
-		if (i == 0 && stat_opt)
+		stat_opt = opt->output_format & STAT_FORMAT_MASK;
+		if (stat_opt) {
 			diffopts.output_format = stat_opt;
-		else
-			diffopts.output_format = DIFF_FORMAT_NO_OUTPUT;
-		diff_tree_sha1(parents->sha1[i], sha1, "", &diffopts);
-		diffcore_std(&diffopts);
-		paths = intersect_paths(paths, i, num_parent);
 
-		if (show_log_first && i == 0) {
-			show_log(rev);
-
-			if (rev->verbose_header && opt->output_format)
-				printf("%s%c", diff_line_prefix(opt),
-				       opt->line_termination);
+			diff_tree_oid(&parents->oid[0], oid, "", &diffopts);
+			diffcore_std(&diffopts);
+			if (opt->orderfile)
+				diffcore_order(opt->orderfile);
+			diff_flush(&diffopts);
 		}
-		diff_flush(&diffopts);
 	}
 
-	/* find out surviving paths */
-	for (num_paths = 0, p = paths; p; p = p->next) {
-		if (p->len)
-			num_paths++;
+	/* find out number of surviving paths */
+	for (num_paths = 0, p = paths; p; p = p->next)
+		num_paths++;
+
+	/* order paths according to diffcore_order */
+	if (opt->orderfile && num_paths) {
+		struct obj_order *o;
+
+		ALLOC_ARRAY(o, num_paths);
+		for (i = 0, p = paths; p; p = p->next, i++)
+			o[i].obj = p;
+		order_objects(opt->orderfile, path_path, o, num_paths);
+		for (i = 0; i < num_paths - 1; i++) {
+			p = o[i].obj;
+			p->next = o[i+1].obj;
+		}
+
+		p = o[num_paths-1].obj;
+		p->next = NULL;
+		paths = o[0].obj;
+		free(o);
 	}
+
+
 	if (num_paths) {
 		if (opt->output_format & (DIFF_FORMAT_RAW |
 					  DIFF_FORMAT_NAME |
 					  DIFF_FORMAT_NAME_STATUS)) {
-			for (p = paths; p; p = p->next) {
-				if (p->len)
-					show_raw_diff(p, num_parent, rev);
-			}
+			for (p = paths; p; p = p->next)
+				show_raw_diff(p, num_parent, rev);
 			needsep = 1;
 		}
-		else if (opt->output_format &
-			 (DIFF_FORMAT_NUMSTAT|DIFF_FORMAT_DIFFSTAT))
+		else if (opt->output_format & STAT_FORMAT_MASK)
 			needsep = 1;
 		else if (opt->output_format & DIFF_FORMAT_CALLBACK)
 			handle_combined_callback(opt, paths, num_parent, num_paths);
@@ -1358,11 +1580,9 @@ void diff_tree_combined(const unsigned char *sha1,
 			if (needsep)
 				printf("%s%c", diff_line_prefix(opt),
 				       opt->line_termination);
-			for (p = paths; p; p = p->next) {
-				if (p->len)
-					show_patch_diff(p, num_parent, dense,
-							0, rev);
-			}
+			for (p = paths; p; p = p->next)
+				show_patch_diff(p, num_parent, dense,
+						0, rev);
 		}
 	}
 
@@ -1370,20 +1590,26 @@ void diff_tree_combined(const unsigned char *sha1,
 	while (paths) {
 		struct combine_diff_path *tmp = paths;
 		paths = paths->next;
+		for (i = 0; i < num_parent; i++)
+			if (rev->combined_all_paths &&
+			    filename_changed(tmp->parent[i].status))
+				strbuf_release(&tmp->parent[i].path);
 		free(tmp);
 	}
+
+	clear_pathspec(&diffopts.pathspec);
 }
 
 void diff_tree_combined_merge(const struct commit *commit, int dense,
 			      struct rev_info *rev)
 {
-	struct commit_list *parent = commit->parents;
-	struct sha1_array parents = SHA1_ARRAY_INIT;
+	struct commit_list *parent = get_saved_parents(rev, commit);
+	struct oid_array parents = OID_ARRAY_INIT;
 
 	while (parent) {
-		sha1_array_append(&parents, parent->item->object.sha1);
+		oid_array_append(&parents, &parent->item->object.oid);
 		parent = parent->next;
 	}
-	diff_tree_combined(commit->object.sha1, &parents, dense, rev);
-	sha1_array_clear(&parents);
+	diff_tree_combined(&commit->object.oid, &parents, dense, rev);
+	oid_array_clear(&parents);
 }

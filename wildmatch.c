@@ -104,8 +104,8 @@ static int dowild(const uchar *p, const uchar *text, unsigned int flags)
 					    dowild(p + 1, text, flags) == WM_MATCH)
 						return WM_MATCH;
 					match_slash = 1;
-				} else
-					return WM_ABORT_MALFORMED;
+				} else /* WM_PATHNAME is set */
+					match_slash = 0;
 			} else
 				/* without WM_PATHNAME, '*' == '**' */
 				match_slash = flags & WM_PATHNAME ? 0 : 1;
@@ -136,7 +136,7 @@ static int dowild(const uchar *p, const uchar *text, unsigned int flags)
 				/*
 				 * Try to advance faster when an asterisk is
 				 * followed by a literal. We know in this case
-				 * that the the string before the literal
+				 * that the string before the literal
 				 * must belong to "*".
 				 * If match_slash is false, do not look past
 				 * the first slash as it cannot belong to '*'.
@@ -196,6 +196,11 @@ static int dowild(const uchar *p, const uchar *text, unsigned int flags)
 					}
 					if (t_ch <= p_ch && t_ch >= prev_ch)
 						matched = 1;
+					else if ((flags & WM_CASEFOLD) && ISLOWER(t_ch)) {
+						uchar t_ch_upper = toupper(t_ch);
+						if (t_ch_upper <= p_ch && t_ch_upper >= prev_ch)
+							matched = 1;
+					}
 					p_ch = 0; /* This makes "prev_ch" get set to 0. */
 				} else if (p_ch == '[' && p[1] == ':') {
 					const uchar *s;
@@ -245,6 +250,8 @@ static int dowild(const uchar *p, const uchar *text, unsigned int flags)
 					} else if (CC_EQ(s,i, "upper")) {
 						if (ISUPPER(t_ch))
 							matched = 1;
+						else if ((flags & WM_CASEFOLD) && ISLOWER(t_ch))
+							matched = 1;
 					} else if (CC_EQ(s,i, "xdigit")) {
 						if (ISXDIGIT(t_ch))
 							matched = 1;
@@ -265,8 +272,7 @@ static int dowild(const uchar *p, const uchar *text, unsigned int flags)
 }
 
 /* Match the "pattern" against the "text" string. */
-int wildmatch(const char *pattern, const char *text,
-	      unsigned int flags, struct wildopts *wo)
+int wildmatch(const char *pattern, const char *text, unsigned int flags)
 {
 	return dowild((const uchar*)pattern, (const uchar*)text, flags);
 }

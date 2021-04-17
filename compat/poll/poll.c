@@ -16,8 +16,10 @@
    GNU General Public License for more details.
 
    You should have received a copy of the GNU General Public License along
-   with this program; if not, write to the Free Software Foundation,
-   Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.  */
+   with this program; if not, see <http://www.gnu.org/licenses/>.  */
+
+/* To bump the minimum Windows version to Windows Vista */
+#include "git-compat-util.h"
 
 /* Tell gcc not to warn about the (nfd < 0) tests, below.  */
 #if (__GNUC__ == 4 && 3 <= __GNUC_MINOR__) || 4 < __GNUC__
@@ -30,16 +32,13 @@
 
 #include <sys/types.h>
 
-/* Specification.  */
-#include <poll.h>
-
 #include <errno.h>
 #include <limits.h>
 #include <assert.h>
 
 #if (defined _WIN32 || defined __WIN32__) && ! defined __CYGWIN__
 # define WIN32_NATIVE
-# if defined (_MSC_VER)
+# if defined (_MSC_VER) && !defined(_WIN32_WINNT)
 #  define _WIN32_WINNT 0x0502
 # endif
 # include <winsock2.h>
@@ -55,6 +54,9 @@
 # endif
 # include <unistd.h>
 #endif
+
+/* Specification.  */
+#include "poll.h"
 
 #ifdef HAVE_SYS_IOCTL_H
 # include <sys/ioctl.h>
@@ -76,7 +78,7 @@
 
 #ifdef WIN32_NATIVE
 
-#define IsConsoleHandle(h) (((long) (h) & 3) == 3)
+#define IsConsoleHandle(h) (((long) (intptr_t) (h) & 3) == 3)
 
 static BOOL
 IsSocketHandle (HANDLE h)
@@ -137,22 +139,10 @@ win32_compute_revents (HANDLE h, int *p_sought)
   INPUT_RECORD *irbuffer;
   DWORD avail, nbuffer;
   BOOL bRet;
-  IO_STATUS_BLOCK iosb;
-  FILE_PIPE_LOCAL_INFORMATION fpli;
-  static PNtQueryInformationFile NtQueryInformationFile;
-  static BOOL once_only;
 
   switch (GetFileType (h))
     {
     case FILE_TYPE_PIPE:
-      if (!once_only)
-	{
-	  NtQueryInformationFile = (PNtQueryInformationFile)
-	    GetProcAddress (GetModuleHandle ("ntdll.dll"),
-			    "NtQueryInformationFile");
-	  once_only = TRUE;
-	}
-
       happened = 0;
       if (PeekNamedPipe (h, NULL, 0, NULL, &avail, NULL) != 0)
 	{
@@ -164,22 +154,9 @@ win32_compute_revents (HANDLE h, int *p_sought)
 
       else
 	{
-	  /* It was the write-end of the pipe.  Check if it is writable.
-	     If NtQueryInformationFile fails, optimistically assume the pipe is
-	     writable.  This could happen on Win9x, where NtQueryInformationFile
-	     is not available, or if we inherit a pipe that doesn't permit
-	     FILE_READ_ATTRIBUTES access on the write end (I think this should
-	     not happen since WinXP SP2; WINE seems fine too).  Otherwise,
-	     ensure that enough space is available for atomic writes.  */
-	  memset (&iosb, 0, sizeof (iosb));
-	  memset (&fpli, 0, sizeof (fpli));
-
-	  if (!NtQueryInformationFile
-	      || NtQueryInformationFile (h, &iosb, &fpli, sizeof (fpli),
-					 FilePipeLocalInformation)
-	      || fpli.WriteQuotaAvailable >= PIPE_BUF
-	      || (fpli.OutboundQuota < PIPE_BUF &&
-		  fpli.WriteQuotaAvailable == fpli.OutboundQuota))
+	  /* It was the write-end of the pipe. Unfortunately there is no
+	     reliable way of knowing if it can be written without blocking.
+	     Just say that it's all good. */
 	    happened |= *p_sought & (POLLOUT | POLLWRNORM | POLLWRBAND);
 	}
       return happened;
@@ -438,6 +415,10 @@ poll (struct pollfd *pfd, nfds_t nfd, int timeout)
 	    pfd[i].revents = happened;
 	    rc++;
 	  }
+	else
+	  {
+	    pfd[i].revents = 0;
+	  }
       }
 
   return rc;
@@ -446,7 +427,8 @@ poll (struct pollfd *pfd, nfds_t nfd, int timeout)
   static HANDLE hEvent;
   WSANETWORKEVENTS ev;
   HANDLE h, handle_array[FD_SETSIZE + 2];
-  DWORD ret, wait_timeout, nhandles;
+  DWORD ret, wait_timeout, nhandles, orig_timeout = 0;
+  ULONGLONG start = 0;
   fd_set rfds, wfds, xfds;
   BOOL poll_again;
   MSG msg;
@@ -457,6 +439,12 @@ poll (struct pollfd *pfd, nfds_t nfd, int timeout)
     {
       errno = EINVAL;
       return -1;
+    }
+
+  if (timeout != INFTIM)
+    {
+      orig_timeout = timeout;
+      start = GetTickCount64();
     }
 
   if (!hEvent)
@@ -576,7 +564,7 @@ restart:
 	{
 	  /* It's a socket.  */
 	  WSAEnumNetworkEvents ((SOCKET) h, NULL, &ev);
-	  WSAEventSelect ((SOCKET) h, 0, 0);
+	  WSAEventSelect ((SOCKET) h, NULL, 0);
 
 	  /* If we're lucky, WSAEnumNetworkEvents already provided a way
 	     to distinguish FD_READ and FD_ACCEPT; this saves a recv later.  */
@@ -603,9 +591,15 @@ restart:
 	rc++;
     }
 
-  if (!rc && timeout == INFTIM)
+  if (!rc && orig_timeout && timeout != INFTIM)
     {
-      SwitchToThread();
+      ULONGLONG elapsed = GetTickCount64() - start;
+      timeout = elapsed >= orig_timeout ? 0 : (int)(orig_timeout - elapsed);
+    }
+
+  if (!rc && timeout)
+    {
+      SleepEx (1, TRUE);
       goto restart;
     }
 

@@ -80,27 +80,22 @@ test_expect_success 'change gets noticed' '
 
 '
 
-# Note that this is scheduled to change in Git 2.0, when
-# "git add -u" will become full-tree by default.
-test_expect_success 'non-limited update in subdir leaves root alone' '
+test_expect_success 'non-qualified update in subdir updates from the root' '
 	(
 		cd dir1 &&
 		echo even more >>sub2 &&
+		git --literal-pathspecs add -u &&
+		echo even more >>sub2 &&
 		git add -u
 	) &&
-	cat >expect <<-\EOF &&
-	check
-	top
-	EOF
 	git diff-files --name-only >actual &&
-	test_cmp expect actual
+	test_must_be_empty actual
 '
 
-test_expect_success SYMLINKS 'replace a file with a symlink' '
+test_expect_success 'replace a file with a symlink' '
 
 	rm foo &&
-	ln -s top foo &&
-	git add -u -- foo
+	test_ln_s_add top foo
 
 '
 

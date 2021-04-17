@@ -9,7 +9,10 @@ package Git;
 
 use 5.008;
 use strict;
+use warnings;
 
+use File::Temp ();
+use File::Spec ();
 
 BEGIN {
 
@@ -59,9 +62,10 @@ require Exporter;
                 command_bidi_pipe command_close_bidi_pipe
                 version exec_path html_path hash_object git_cmd_try
                 remote_refs prompt
-                get_tz_offset
+                get_tz_offset get_record
                 credential credential_read credential_write
-                temp_acquire temp_release temp_reset temp_path);
+                temp_acquire temp_is_locked temp_release temp_reset temp_path
+                unquote_path);
 
 
 =head1 DESCRIPTION
@@ -100,7 +104,7 @@ increase notwithstanding).
 
 
 use Carp qw(carp croak); # but croak is bad - throw instead
-use Error qw(:try);
+use Git::LoadCPAN::Error qw(:try);
 use Cwd qw(abs_path cwd);
 use IPC::Open2 qw(open2);
 use Fcntl qw(SEEK_SET SEEK_CUR);
@@ -188,7 +192,7 @@ sub repository {
 		};
 
 		if ($dir) {
-			$dir =~ m#^/# or $dir = $opts{Directory} . '/' . $dir;
+			File::Spec->file_name_is_absolute($dir) or $dir = $opts{Directory} . '/' . $dir;
 			$opts{Repository} = abs_path($dir);
 
 			# If --git-dir went ok, this shouldn't die either.
@@ -392,7 +396,7 @@ sub command_close_pipe {
 Execute the given C<COMMAND> in the same way as command_output_pipe()
 does but return both an input pipe filehandle and an output pipe filehandle.
 
-The function will return return C<($pid, $pipe_in, $pipe_out, $ctx)>.
+The function will return C<($pid, $pipe_in, $pipe_out, $ctx)>.
 See C<command_close_bidi_pipe()> for details.
 
 =cut
@@ -530,20 +534,36 @@ If TIME is not supplied, the current local time is used.
 =cut
 
 sub get_tz_offset {
-	# some systmes don't handle or mishandle %z, so be creative.
+	# some systems don't handle or mishandle %z, so be creative.
 	my $t = shift || time;
-	my $gm = timegm(localtime($t));
+	my @t = localtime($t);
+	$t[5] += 1900;
+	my $gm = timegm(@t);
 	my $sign = qw( + + - )[ $gm <=> $t ];
 	return sprintf("%s%02d%02d", $sign, (gmtime(abs($t - $gm)))[2,1]);
 }
 
+=item get_record ( FILEHANDLE, INPUT_RECORD_SEPARATOR )
+
+Read one record from FILEHANDLE delimited by INPUT_RECORD_SEPARATOR,
+removing any trailing INPUT_RECORD_SEPARATOR.
+
+=cut
+
+sub get_record {
+	my ($fh, $rs) = @_;
+	local $/ = $rs;
+	my $rec = <$fh>;
+	chomp $rec if defined $rec;
+	$rec;
+}
 
 =item prompt ( PROMPT , ISPASSWORD  )
 
 Query user C<PROMPT> and return answer from user.
 
 Honours GIT_ASKPASS and SSH_ASKPASS environment variables for querying
-the user. If no *_ASKPASS variable is set or an error occoured,
+the user. If no *_ASKPASS variable is set or an error occurred,
 the terminal is tried as a fallback.
 If C<ISPASSWORD> is set and true, the terminal disables echo.
 
@@ -695,7 +715,7 @@ Retrieve the integer configuration C<VARIABLE>. The return value
 is simple decimal number.  An optional value suffix of 'k', 'm',
 or 'g' in the config file will cause the value to be multiplied
 by 1024, 1048576 (1024^2), or 1073741824 (1024^3) prior to output.
-It would return C<undef> if configuration variable is not defined,
+It would return C<undef> if configuration variable is not defined.
 
 =cut
 
@@ -704,7 +724,7 @@ sub config_int {
 }
 
 # Common subroutine to implement bulk of what the config* family of methods
-# do. This curently wraps command('config') so it is not so fast.
+# do. This currently wraps command('config') so it is not so fast.
 sub _config_common {
 	my ($opts) = shift @_;
 	my ($self, $var) = _maybe_self(@_);
@@ -864,7 +884,6 @@ sub ident_person {
 	return "$ident[0] <$ident[1]>";
 }
 
-
 =item hash_object ( TYPE, FILENAME )
 
 Compute the SHA1 object id of the given C<FILENAME> considering it is
@@ -961,7 +980,7 @@ sub cat_blob {
 		return -1;
 	}
 
-	if ($description !~ /^[0-9a-fA-F]{40} \S+ (\d+)$/) {
+	if ($description !~ /^[0-9a-fA-F]{40}(?:[0-9a-fA-F]{24})? \S+ (\d+)$/) {
 		carp "Unexpected result returned from git cat-file";
 		return -1;
 	}
@@ -1206,6 +1225,35 @@ sub temp_acquire {
 	$temp_fd;
 }
 
+=item temp_is_locked ( NAME )
+
+Returns true if the internal lock created by a previous C<temp_acquire()>
+call with C<NAME> is still in effect.
+
+When temp_acquire is called on a C<NAME>, it internally locks the temporary
+file mapped to C<NAME>.  That lock will not be released until C<temp_release()>
+is called with either the original C<NAME> or the L<File::Handle> that was
+returned from the original call to temp_acquire.
+
+Subsequent attempts to call C<temp_acquire()> with the same C<NAME> will fail
+unless there has been an intervening C<temp_release()> call for that C<NAME>
+(or its corresponding L<File::Handle> that was returned by the original
+C<temp_acquire()> call).
+
+If true is returned by C<temp_is_locked()> for a C<NAME>, an attempt to
+C<temp_acquire()> the same C<NAME> will cause an error unless
+C<temp_release> is first called on that C<NAME> (or its corresponding
+L<File::Handle> that was returned by the original C<temp_acquire()> call).
+
+=cut
+
+sub temp_is_locked {
+	my ($self, $name) = _maybe_self(@_);
+	my $temp_fd = \$TEMP_FILEMAP{$name};
+
+	defined $$temp_fd && $$temp_fd->opened && $TEMP_FILES{$$temp_fd}{locked};
+}
+
 =item temp_release ( NAME )
 
 =item temp_release ( FILEHANDLE )
@@ -1244,8 +1292,6 @@ sub temp_release {
 sub _temp_cache {
 	my ($self, $name) = _maybe_self(@_);
 
-	_verify_require();
-
 	my $temp_fd = \$TEMP_FILEMAP{$name};
 	if (defined $$temp_fd and $$temp_fd->opened) {
 		if ($TEMP_FILES{$$temp_fd}{locked}) {
@@ -1265,8 +1311,11 @@ sub _temp_cache {
 			$tmpdir = $self->repo_path();
 		}
 
+		my $n = $name;
+		$n =~ s/\W/_/g; # no strange chars
+
 		($$temp_fd, $fname) = File::Temp::tempfile(
-			'Git_XXXXXX', UNLINK => 1, DIR => $tmpdir,
+			"Git_${n}_XXXXXX", UNLINK => 1, DIR => $tmpdir,
 			) or throw Error::Simple("couldn't open new temp file");
 
 		$$temp_fd->autoflush;
@@ -1274,11 +1323,6 @@ sub _temp_cache {
 		$TEMP_FILES{$$temp_fd}{fname} = $fname;
 	}
 	$$temp_fd;
-}
-
-sub _verify_require {
-	eval { require File::Temp; require File::Spec; };
-	$@ and throw Error::Simple($@);
 }
 
 =item temp_reset ( FILEHANDLE )
@@ -1320,6 +1364,95 @@ sub END {
 }
 
 } # %TEMP_* Lexical Context
+
+=item prefix_lines ( PREFIX, STRING [, STRING... ])
+
+Prefixes lines in C<STRING> with C<PREFIX>.
+
+=cut
+
+sub prefix_lines {
+	my $prefix = shift;
+	my $string = join("\n", @_);
+	$string =~ s/^/$prefix/mg;
+	return $string;
+}
+
+=item unquote_path ( PATH )
+
+Unquote a quoted path containing c-escapes as returned by ls-files etc.
+when not using -z or when parsing the output of diff -u.
+
+=cut
+
+{
+	my %cquote_map = (
+		"a" => chr(7),
+		"b" => chr(8),
+		"t" => chr(9),
+		"n" => chr(10),
+		"v" => chr(11),
+		"f" => chr(12),
+		"r" => chr(13),
+		"\\" => "\\",
+		"\042" => "\042",
+	);
+
+	sub unquote_path {
+		local ($_) = @_;
+		my ($retval, $remainder);
+		if (!/^\042(.*)\042$/) {
+			return $_;
+		}
+		($_, $retval) = ($1, "");
+		while (/^([^\\]*)\\(.*)$/) {
+			$remainder = $2;
+			$retval .= $1;
+			for ($remainder) {
+				if (/^([0-3][0-7][0-7])(.*)$/) {
+					$retval .= chr(oct($1));
+					$_ = $2;
+					last;
+				}
+				if (/^([\\\042abtnvfr])(.*)$/) {
+					$retval .= $cquote_map{$1};
+					$_ = $2;
+					last;
+				}
+				# This is malformed
+				throw Error::Simple("invalid quoted path $_[0]");
+			}
+			$_ = $remainder;
+		}
+		$retval .= $_;
+		return $retval;
+	}
+}
+
+=item get_comment_line_char ( )
+
+Gets the core.commentchar configuration value.
+The value falls-back to '#' if core.commentchar is set to 'auto'.
+
+=cut
+
+sub get_comment_line_char {
+	my $comment_line_char = config("core.commentchar") || '#';
+	$comment_line_char = '#' if ($comment_line_char eq 'auto');
+	$comment_line_char = '#' if (length($comment_line_char) != 1);
+	return $comment_line_char;
+}
+
+=item comment_lines ( STRING [, STRING... ])
+
+Comments lines following core.commentchar configuration.
+
+=cut
+
+sub comment_lines {
+	my $comment_line_char = get_comment_line_char;
+	return prefix_lines("$comment_line_char ", @_);
+}
 
 =back
 
@@ -1556,7 +1689,6 @@ sub DESTROY {
 # Pipe implementation for ActiveState Perl.
 
 package Git::activestate_pipe;
-use strict;
 
 sub TIEHANDLE {
 	my ($class, @params) = @_;

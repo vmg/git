@@ -37,14 +37,13 @@ test_expect_success 'verify number of revisions' \
 
 test_expect_success 'corrupt second commit object' \
    '
-   "$PERL_PATH" -i.bak -pe "s/second commit/socond commit/" .git/objects/pack/*.pack &&
+   perl -i.bak -pe "s/second commit/socond commit/" .git/objects/pack/*.pack &&
    test_must_fail git fsck --full
    '
 
-test_expect_success 'rev-list should fail' \
-   '
-   test_must_fail git rev-list --all > /dev/null
-   '
+test_expect_success 'rev-list should fail' '
+	test_must_fail env GIT_TEST_COMMIT_GRAPH=0 git -c core.commitGraph=false rev-list --all > /dev/null
+'
 
 test_expect_success 'git repack _MUST_ fail' \
    '

@@ -2,15 +2,35 @@
  * Copyright (c) 2010 Ævar Arnfjörð Bjarmason
  */
 
-#include "git-compat-util.h"
+#include "cache.h"
+#include "exec-cmd.h"
 #include "gettext.h"
 #include "strbuf.h"
 #include "utf8.h"
+#include "config.h"
 
 #ifndef NO_GETTEXT
 #	include <locale.h>
 #	include <libintl.h>
-#	ifdef HAVE_LIBCHARSET_H
+#	ifdef GIT_WINDOWS_NATIVE
+
+static const char *locale_charset(void)
+{
+	const char *env = getenv("LC_ALL"), *dot;
+
+	if (!env || !*env)
+		env = getenv("LC_CTYPE");
+	if (!env || !*env)
+		env = getenv("LANG");
+
+	if (!env)
+		return "UTF-8";
+
+	dot = strchr(env, '.');
+	return !dot ? env : dot + 1;
+}
+
+#	elif defined HAVE_LIBCHARSET_H
 #		include <libcharset.h>
 #	else
 #		include <langinfo.h>
@@ -18,18 +38,53 @@
 #	endif
 #endif
 
-#ifdef GETTEXT_POISON
+static const char *charset;
+
+/*
+ * Guess the user's preferred languages from the value in LANGUAGE environment
+ * variable and LC_MESSAGES locale category if NO_GETTEXT is not defined.
+ *
+ * The result can be a colon-separated list like "ko:ja:en".
+ */
+const char *get_preferred_languages(void)
+{
+	const char *retval;
+
+	retval = getenv("LANGUAGE");
+	if (retval && *retval)
+		return retval;
+
+#ifndef NO_GETTEXT
+	retval = setlocale(LC_MESSAGES, NULL);
+	if (retval && *retval &&
+		strcmp(retval, "C") &&
+		strcmp(retval, "POSIX"))
+		return retval;
+#endif
+
+	return NULL;
+}
+
 int use_gettext_poison(void)
 {
 	static int poison_requested = -1;
 	if (poison_requested == -1)
-		poison_requested = getenv("GIT_GETTEXT_POISON") ? 1 : 0;
+		poison_requested = git_env_bool("GIT_TEST_GETTEXT_POISON", 0);
 	return poison_requested;
 }
-#endif
 
 #ifndef NO_GETTEXT
-static const char *charset;
+static int test_vsnprintf(const char *fmt, ...)
+{
+	char buf[26];
+	int ret;
+	va_list ap;
+	va_start(ap, fmt);
+	ret = vsnprintf(buf, sizeof(buf), fmt, ap);
+	va_end(ap);
+	return ret;
+}
+
 static void init_gettext_charset(const char *domain)
 {
 	/*
@@ -99,9 +154,7 @@ static void init_gettext_charset(const char *domain)
 	   $ LANGUAGE= LANG=de_DE.utf8 ./test
 	   test: Kein passendes Ger?t gefunden
 
-	   In the long term we should probably see about getting that
-	   vsnprintf bug in glibc fixed, and audit our code so it won't
-	   fall apart under a non-C locale.
+	   The vsnprintf bug has been fixed since glibc 2.17.
 
 	   Then we could simply set LC_CTYPE from the environment, which would
 	   make things like the external perror(3) messages work.
@@ -115,19 +168,33 @@ static void init_gettext_charset(const char *domain)
 	setlocale(LC_CTYPE, "");
 	charset = locale_charset();
 	bind_textdomain_codeset(domain, charset);
-	setlocale(LC_CTYPE, "C");
+	/* the string is taken from v0.99.6~1 */
+	if (test_vsnprintf("%.*s", 13, "David_K\345gedal") < 0)
+		setlocale(LC_CTYPE, "C");
 }
 
 void git_setup_gettext(void)
 {
-	const char *podir = getenv("GIT_TEXTDOMAINDIR");
+	const char *podir = getenv(GIT_TEXT_DOMAIN_DIR_ENVIRONMENT);
+	char *p = NULL;
 
 	if (!podir)
-		podir = GIT_LOCALE_PATH;
+		podir = p = system_path(GIT_LOCALE_PATH);
+
+	use_gettext_poison(); /* getenv() reentrancy paranoia */
+
+	if (!is_directory(podir)) {
+		free(p);
+		return;
+	}
+
 	bindtextdomain("git", podir);
 	setlocale(LC_MESSAGES, "");
+	setlocale(LC_TIME, "");
 	init_gettext_charset("git");
 	textdomain("git");
+
+	free(p);
 }
 
 /* return the number of columns of string 's' in current locale */
@@ -135,8 +202,27 @@ int gettext_width(const char *s)
 {
 	static int is_utf8 = -1;
 	if (is_utf8 == -1)
-		is_utf8 = !strcmp(charset, "UTF-8");
+		is_utf8 = is_utf8_locale();
 
 	return is_utf8 ? utf8_strwidth(s) : strlen(s);
 }
 #endif
+
+int is_utf8_locale(void)
+{
+#ifdef NO_GETTEXT
+	if (!charset) {
+		const char *env = getenv("LC_ALL");
+		if (!env || !*env)
+			env = getenv("LC_CTYPE");
+		if (!env || !*env)
+			env = getenv("LANG");
+		if (!env)
+			env = "";
+		if (strchr(env, '.'))
+			env = strchr(env, '.') + 1;
+		charset = xstrdup(env);
+	}
+#endif
+	return is_encoding_utf8(charset);
+}

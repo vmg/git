@@ -1,40 +1,48 @@
 #include "cache.h"
+#include "config.h"
 #include "run-command.h"
 #include "sigchain.h"
+#include "alias.h"
 
 #ifndef DEFAULT_PAGER
 #define DEFAULT_PAGER "less"
 #endif
 
-struct pager_config {
-	const char *cmd;
-	int want;
-	char *value;
-};
+static struct child_process pager_process = CHILD_PROCESS_INIT;
+static const char *pager_program;
 
-/*
- * This is split up from the rest of git so that we can do
- * something different on Windows.
- */
-
-static const char *pager_argv[] = { NULL, NULL };
-static struct child_process pager_process;
-
-static void wait_for_pager(void)
+static void wait_for_pager(int in_signal)
 {
-	fflush(stdout);
-	fflush(stderr);
+	if (!in_signal) {
+		fflush(stdout);
+		fflush(stderr);
+	}
 	/* signal EOF to pager */
 	close(1);
 	close(2);
-	finish_command(&pager_process);
+	if (in_signal)
+		finish_command_in_signal(&pager_process);
+	else
+		finish_command(&pager_process);
+}
+
+static void wait_for_pager_atexit(void)
+{
+	wait_for_pager(0);
 }
 
 static void wait_for_pager_signal(int signo)
 {
-	wait_for_pager();
+	wait_for_pager(1);
 	sigchain_pop(signo);
 	raise(signo);
+}
+
+static int core_pager_config(const char *var, const char *value, void *data)
+{
+	if (!strcmp(var, "core.pager"))
+		return git_config_string(&pager_program, var, value);
+	return 0;
 }
 
 const char *git_pager(int stdout_is_tty)
@@ -47,43 +55,78 @@ const char *git_pager(int stdout_is_tty)
 	pager = getenv("GIT_PAGER");
 	if (!pager) {
 		if (!pager_program)
-			git_config(git_default_config, NULL);
+			read_early_config(core_pager_config, NULL);
 		pager = pager_program;
 	}
 	if (!pager)
 		pager = getenv("PAGER");
 	if (!pager)
 		pager = DEFAULT_PAGER;
-	else if (!*pager || !strcmp(pager, "cat"))
+	if (!*pager || !strcmp(pager, "cat"))
 		pager = NULL;
 
 	return pager;
+}
+
+static void setup_pager_env(struct argv_array *env)
+{
+	const char **argv;
+	int i;
+	char *pager_env = xstrdup(PAGER_ENV);
+	int n = split_cmdline(pager_env, &argv);
+
+	if (n < 0)
+		die("malformed build-time PAGER_ENV: %s",
+			split_cmdline_strerror(n));
+
+	for (i = 0; i < n; i++) {
+		char *cp = strchr(argv[i], '=');
+
+		if (!cp)
+			die("malformed build-time PAGER_ENV");
+
+		*cp = '\0';
+		if (!getenv(argv[i])) {
+			*cp = '=';
+			argv_array_push(env, argv[i]);
+		}
+	}
+	free(pager_env);
+	free(argv);
+}
+
+void prepare_pager_args(struct child_process *pager_process, const char *pager)
+{
+	argv_array_push(&pager_process->args, pager);
+	pager_process->use_shell = 1;
+	setup_pager_env(&pager_process->env_array);
+	pager_process->trace2_child_class = "pager";
 }
 
 void setup_pager(void)
 {
 	const char *pager = git_pager(isatty(1));
 
-	if (!pager || pager_in_use())
+	if (!pager)
 		return;
 
 	/*
-	 * force computing the width of the terminal before we redirect
-	 * the standard output to the pager.
+	 * After we redirect standard output, we won't be able to use an ioctl
+	 * to get the terminal size. Let's grab it now, and then set $COLUMNS
+	 * to communicate it to any sub-processes.
 	 */
-	(void) term_columns();
+	{
+		char buf[64];
+		xsnprintf(buf, sizeof(buf), "%d", term_columns());
+		setenv("COLUMNS", buf, 0);
+	}
 
 	setenv("GIT_PAGER_IN_USE", "true", 1);
 
 	/* spawn the pager */
-	pager_argv[0] = pager;
-	pager_process.use_shell = 1;
-	pager_process.argv = pager_argv;
+	prepare_pager_args(&pager_process, pager);
 	pager_process.in = -1;
-	if (!getenv("LESS")) {
-		static const char *env[] = { "LESS=FRSX", NULL };
-		pager_process.env = env;
-	}
+	argv_array_push(&pager_process.env_array, "GIT_PAGER_IN_USE");
 	if (start_command(&pager_process))
 		return;
 
@@ -95,14 +138,12 @@ void setup_pager(void)
 
 	/* this makes sure that the parent terminates after the pager */
 	sigchain_push_common(wait_for_pager_signal);
-	atexit(wait_for_pager);
+	atexit(wait_for_pager_atexit);
 }
 
 int pager_in_use(void)
 {
-	const char *env;
-	env = getenv("GIT_PAGER_IN_USE");
-	return env ? git_config_bool("GIT_PAGER_IN_USE", env) : 0;
+	return git_env_bool("GIT_PAGER_IN_USE", 0);
 }
 
 /*
@@ -137,41 +178,73 @@ int term_columns(void)
 }
 
 /*
+ * Clear the entire line, leave cursor in first column.
+ */
+void term_clear_line(void)
+{
+	if (is_terminal_dumb())
+		/*
+		 * Fall back to print a terminal width worth of space
+		 * characters (hoping that the terminal is still as wide
+		 * as it was upon the first call to term_columns()).
+		 */
+		fprintf(stderr, "\r%*s\r", term_columns(), "");
+	else
+		/*
+		 * On non-dumb terminals use an escape sequence to clear
+		 * the whole line, no matter how wide the terminal.
+		 */
+		fputs("\r\033[K", stderr);
+}
+
+/*
  * How many columns do we need to show this number in decimal?
  */
-int decimal_width(int number)
+int decimal_width(uintmax_t number)
 {
-	int i, width;
+	int width;
 
-	for (width = 1, i = 10; i <= number; width++)
-		i *= 10;
+	for (width = 1; number >= 10; width++)
+		number /= 10;
 	return width;
 }
 
-static int pager_command_config(const char *var, const char *value, void *data)
+struct pager_command_config_data {
+	const char *cmd;
+	int want;
+	char *value;
+};
+
+static int pager_command_config(const char *var, const char *value, void *vdata)
 {
-	struct pager_config *c = data;
-	if (!prefixcmp(var, "pager.") && !strcmp(var + 6, c->cmd)) {
-		int b = git_config_maybe_bool(var, value);
+	struct pager_command_config_data *data = vdata;
+	const char *cmd;
+
+	if (skip_prefix(var, "pager.", &cmd) && !strcmp(cmd, data->cmd)) {
+		int b = git_parse_maybe_bool(value);
 		if (b >= 0)
-			c->want = b;
+			data->want = b;
 		else {
-			c->want = 1;
-			c->value = xstrdup(value);
+			data->want = 1;
+			data->value = xstrdup(value);
 		}
 	}
+
 	return 0;
 }
 
 /* returns 0 for "no pager", 1 for "use pager", and -1 for "not specified" */
 int check_pager_config(const char *cmd)
 {
-	struct pager_config c;
-	c.cmd = cmd;
-	c.want = -1;
-	c.value = NULL;
-	git_config(pager_command_config, &c);
-	if (c.value)
-		pager_program = c.value;
-	return c.want;
+	struct pager_command_config_data data;
+
+	data.cmd = cmd;
+	data.want = -1;
+	data.value = NULL;
+
+	read_early_config(pager_command_config, &data);
+
+	if (data.value)
+		pager_program = data.value;
+	return data.want;
 }

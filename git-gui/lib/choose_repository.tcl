@@ -9,6 +9,18 @@ field w_body      ; # Widget holding the center content
 field w_next      ; # Next button
 field w_quit      ; # Quit button
 field o_cons      ; # Console object (if active)
+
+# Status mega-widget instance during _do_clone2 (used by _copy_files and
+# _link_files). Widget is destroyed before _do_clone2 calls
+# _do_clone_checkout
+field o_status
+
+# Operation displayed by status mega-widget during _do_clone_checkout =>
+# _readtree_wait => _postcheckout_wait => _do_clone_submodules =>
+# _do_validate_submodule_cloning. The status mega-widget is a different
+# instance than that stored in $o_status in earlier operations.
+field o_status_op
+
 field w_types     ; # List of type buttons in clone
 field w_recentlist ; # Listbox containing recent repositories
 field w_localpath  ; # Entry widget bound to local_path
@@ -18,11 +30,16 @@ field local_path       {} ; # Where this repository is locally
 field origin_url       {} ; # Where we are cloning from
 field origin_name  origin ; # What we shall call 'origin'
 field clone_type hardlink ; # Type of clone to construct
+field recursive      true ; # Recursive cloning flag
 field readtree_err        ; # Error output from read-tree (if any)
 field sorted_recent       ; # recent repositories (sorted)
 
 constructor pick {} {
 	global M1T M1B use_ttk NS
+
+	if {[set maxrecent [get_config gui.maxrecentrepo]] eq {}} {
+		set maxrecent 10
+	}
 
 	make_dialog top w
 	wm title $top [mc "Git Gui"]
@@ -137,6 +154,10 @@ constructor pick {} {
 				-label [mc "Recent Repositories"]
 		}
 
+	if {[set lenrecent [llength $sorted_recent]] < $maxrecent} {
+		set lenrecent $maxrecent
+	}
+
 		${NS}::label $w_body.space
 		${NS}::label $w_body.recentlabel \
 			-anchor w \
@@ -148,7 +169,7 @@ constructor pick {} {
 			-background [get_bg_color $w_body.recentlabel] \
 			-wrap none \
 			-width 50 \
-			-height 10
+			-height $lenrecent
 		$w_recentlist tag conf link \
 			-foreground blue \
 			-underline 1
@@ -230,19 +251,19 @@ method _invoke_next {} {
 
 proc _get_recentrepos {} {
 	set recent [list]
-	foreach p [get_config gui.recentrepo] {
+	foreach p [lsort -unique [get_config gui.recentrepo]] {
 		if {[_is_git [file join $p .git]]} {
 			lappend recent $p
 		} else {
 			_unset_recentrepo $p
 		}
 	}
-	return [lsort $recent]
+	return $recent
 }
 
 proc _unset_recentrepo {p} {
 	regsub -all -- {([()\[\]{}\.^$+*?\\])} $p {\\\1} p
-	git config --global --unset gui.recentrepo "^$p\$"
+	catch {git config --global --unset-all gui.recentrepo "^$p\$"}
 	load_config 1
 }
 
@@ -257,16 +278,19 @@ proc _append_recentrepos {path} {
 	set i [lsearch $recent $path]
 	if {$i >= 0} {
 		_unset_recentrepo $path
-		set recent [lreplace $recent $i $i]
 	}
 
-	lappend recent $path
 	git config --global --add gui.recentrepo $path
 	load_config 1
+	set recent [get_config gui.recentrepo]
 
-	while {[llength $recent] > 10} {
+	if {[set maxrecent [get_config gui.maxrecentrepo]] eq {}} {
+		set maxrecent 10
+	}
+
+	while {[llength $recent] > $maxrecent} {
 		_unset_recentrepo [lindex $recent 0]
-		set recent [lrange $recent 1 end]
+		set recent [get_config gui.recentrepo]
 	}
 }
 
@@ -286,7 +310,9 @@ method _next {action} {
 	destroy $w_body
 	if {![winfo exists $w_next]} {
 		${NS}::button $w_next -default active
-		pack $w_next -side right -padx 5 -before $w_quit
+		set pos -before
+		if {[tk windowingsystem] eq "win32"} { set pos -after }
+		pack $w_next -side right -padx 5 $pos $w_quit
 	}
 	_do_$action $this
 }
@@ -327,16 +353,31 @@ method _git_init {} {
 	return 1
 }
 
-proc _is_git {path} {
+proc _is_git {path {outdir_var ""}} {
+	if {$outdir_var ne ""} {
+		upvar 1 $outdir_var outdir
+	}
+	if {[file isfile $path]} {
+		set fp [open $path r]
+		gets $fp line
+		close $fp
+		if {[regexp "^gitdir: (.+)$" $line line link_target]} {
+			set path [file join [file dirname $path] $link_target]
+			set path [file normalize $path]
+		}
+	}
+
 	if {[file exists [file join $path HEAD]]
 	 && [file exists [file join $path objects]]
 	 && [file exists [file join $path config]]} {
+		set outdir $path
 		return 1
 	}
 	if {[is_Cygwin]} {
 		if {[file exists [file join $path HEAD]]
 		 && [file exists [file join $path objects.lnk]]
 		 && [file exists [file join $path config.lnk]]} {
+			set outdir $path
 			return 1
 		}
 	}
@@ -515,6 +556,11 @@ method _do_clone {} {
 	foreach r $w_types {
 		pack $r -anchor w
 	}
+	${NS}::checkbutton $args.type_f.recursive \
+		-text [mc "Recursively clone submodules too"] \
+		-variable @recursive \
+		-onvalue true -offvalue false
+	pack $args.type_f.recursive -anchor w
 	grid $args.type_l $args.type_f -sticky new
 
 	grid columnconfigure $args 1 -weight 1
@@ -625,12 +671,12 @@ method _do_clone2 {} {
 
 	switch -exact -- $clone_type {
 	hardlink {
-		set o_cons [status_bar::two_line $w_body]
+		set o_status [status_bar::two_line $w_body]
 		pack $w_body -fill x -padx 10 -pady 10
 
-		$o_cons start \
+		set status_op [$o_status start \
 			[mc "Counting objects"] \
-			[mc "buckets"]
+			[mc "buckets"]]
 		update
 
 		if {[file exists [file join $objdir info alternates]]} {
@@ -655,6 +701,7 @@ method _do_clone2 {} {
 			} err]} {
 				catch {cd $pwd}
 				_clone_failed $this [mc "Unable to copy objects/info/alternates: %s" $err]
+				$status_op stop
 				return
 			}
 		}
@@ -666,7 +713,7 @@ method _do_clone2 {} {
 			-directory [file join $objdir] ??]
 		set bcnt [expr {[llength $buckets] + 2}]
 		set bcur 1
-		$o_cons update $bcur $bcnt
+		$status_op update $bcur $bcnt
 		update
 
 		file mkdir [file join .git objects pack]
@@ -674,7 +721,7 @@ method _do_clone2 {} {
 			-directory [file join $objdir pack] *] {
 			lappend tolink [file join pack $i]
 		}
-		$o_cons update [incr bcur] $bcnt
+		$status_op update [incr bcur] $bcnt
 		update
 
 		foreach i $buckets {
@@ -683,10 +730,10 @@ method _do_clone2 {} {
 				-directory [file join $objdir $i] *] {
 				lappend tolink [file join $i $j]
 			}
-			$o_cons update [incr bcur] $bcnt
+			$status_op update [incr bcur] $bcnt
 			update
 		}
-		$o_cons stop
+		$status_op stop
 
 		if {$tolink eq {}} {
 			info_popup [strcat \
@@ -713,6 +760,8 @@ method _do_clone2 {} {
 		if {!$i} return
 
 		destroy $w_body
+
+		set o_status {}
 	}
 	full {
 		set o_cons [console::embed \
@@ -747,9 +796,9 @@ method _do_clone2 {} {
 }
 
 method _copy_files {objdir tocopy} {
-	$o_cons start \
+	set status_op [$o_status start \
 		[mc "Copying objects"] \
-		[mc "KiB"]
+		[mc "KiB"]]
 	set tot 0
 	set cmp 0
 	foreach p $tocopy {
@@ -764,7 +813,7 @@ method _copy_files {objdir tocopy} {
 
 				while {![eof $f_in]} {
 					incr cmp [fcopy $f_in $f_cp -size 16384]
-					$o_cons update \
+					$status_op update \
 						[expr {$cmp / 1024}] \
 						[expr {$tot / 1024}]
 					update
@@ -774,17 +823,19 @@ method _copy_files {objdir tocopy} {
 				close $f_cp
 			} err]} {
 			_clone_failed $this [mc "Unable to copy object: %s" $err]
+			$status_op stop
 			return 0
 		}
 	}
+	$status_op stop
 	return 1
 }
 
 method _link_files {objdir tolink} {
 	set total [llength $tolink]
-	$o_cons start \
+	set status_op [$o_status start \
 		[mc "Linking objects"] \
-		[mc "objects"]
+		[mc "objects"]]
 	for {set i 0} {$i < $total} {} {
 		set p [lindex $tolink $i]
 		if {[catch {
@@ -793,15 +844,17 @@ method _link_files {objdir tolink} {
 					[file join $objdir $p]
 			} err]} {
 			_clone_failed $this [mc "Unable to hardlink object: %s" $err]
+			$status_op stop
 			return 0
 		}
 
 		incr i
 		if {$i % 5 == 0} {
-			$o_cons update $i $total
+			$status_op update $i $total
 			update
 		}
 	}
+	$status_op stop
 	return 1
 }
 
@@ -924,11 +977,26 @@ method _do_clone_checkout {HEAD} {
 		return
 	}
 
-	set o_cons [status_bar::two_line $w_body]
+	set status [status_bar::two_line $w_body]
 	pack $w_body -fill x -padx 10 -pady 10
-	$o_cons start \
+
+	# We start the status operation here.
+	#
+	# This function calls _readtree_wait as a callback.
+	#
+	# _readtree_wait in turn either calls _do_clone_submodules directly,
+	# or calls _postcheckout_wait as a callback which then calls
+	# _do_clone_submodules.
+	#
+	# _do_clone_submodules calls _do_validate_submodule_cloning.
+	#
+	# _do_validate_submodule_cloning stops the status operation.
+	#
+	# There are no other calls into this chain from other code.
+
+	set o_status_op [$status start \
 		[mc "Creating working directory"] \
-		[mc "files"]
+		[mc "files"]]
 
 	set readtree_err {}
 	set fd [git_read --stderr read-tree \
@@ -944,7 +1012,7 @@ method _do_clone_checkout {HEAD} {
 
 method _readtree_wait {fd} {
 	set buf [read $fd]
-	$o_cons update_meter $buf
+	$o_status_op update_meter $buf
 	append readtree_err $buf
 
 	fconfigure $fd -blocking 1
@@ -972,7 +1040,7 @@ method _readtree_wait {fd} {
 		fconfigure $fd_ph -blocking 0 -translation binary -eofchar {}
 		fileevent $fd_ph readable [cb _postcheckout_wait $fd_ph]
 	} else {
-		set done 1
+		_do_clone_submodules $this
 	}
 }
 
@@ -986,10 +1054,38 @@ method _postcheckout_wait {fd_ph} {
 			hook_failed_popup post-checkout $pch_error 0
 		}
 		unset pch_error
-		set done 1
+		_do_clone_submodules $this
 		return
 	}
 	fconfigure $fd_ph -blocking 0
+}
+
+method _do_clone_submodules {} {
+	if {$recursive eq {true}} {
+		$o_status_op stop
+		set o_status_op {}
+
+		destroy $w_body
+
+		set o_cons [console::embed \
+			$w_body \
+			[mc "Cloning submodules"]]
+		pack $w_body -fill both -expand 1 -padx 10
+		$o_cons exec \
+			[list git submodule update --init --recursive] \
+			[cb _do_validate_submodule_cloning]
+	} else {
+		set done 1
+	}
+}
+
+method _do_validate_submodule_cloning {ok} {
+	if {$ok} {
+		$o_cons done $ok
+		set done 1
+	} else {
+		_clone_failed $this [mc "Cannot clone submodules."]
+	}
 }
 
 ######################################################################
@@ -1053,7 +1149,7 @@ method _open_local_path {} {
 }
 
 method _do_open2 {} {
-	if {![_is_git [file join $local_path .git]]} {
+	if {![_is_git [file join $local_path .git] actualgit]} {
 		error_popup [mc "Not a Git repository: %s" [file tail $local_path]]
 		return
 	}
@@ -1066,7 +1162,7 @@ method _do_open2 {} {
 	}
 
 	_append_recentrepos [pwd]
-	set ::_gitdir .git
+	set ::_gitdir $actualgit
 	set ::_prefix {}
 	set done 1
 }

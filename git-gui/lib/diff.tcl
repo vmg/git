@@ -1,6 +1,19 @@
 # git-gui diff viewer
 # Copyright (C) 2006, 2007 Shawn Pearce
 
+proc apply_tab_size {{firsttab {}}} {
+	global have_tk85 repo_config ui_diff
+
+	set w [font measure font_diff "0"]
+	if {$have_tk85 && $firsttab != 0} {
+		$ui_diff configure -tabs [list [expr {$firsttab * $w}] [expr {($firsttab + $repo_config(gui.tabsize)) * $w}]]
+	} elseif {$have_tk85 || $repo_config(gui.tabsize) != 8} {
+		$ui_diff configure -tabs [expr {$repo_config(gui.tabsize) * $w}]
+	} else {
+		$ui_diff configure -tabs {}
+	}
+}
+
 proc clear_diff {} {
 	global ui_diff current_diff_path current_diff_header
 	global ui_index ui_workdir
@@ -42,7 +55,7 @@ proc reshow_diff {{after {}}} {
 
 proc force_diff_encoding {enc} {
 	global current_diff_path
-	
+
 	if {$current_diff_path ne {}} {
 		force_path_encoding $current_diff_path $enc
 		reshow_diff
@@ -105,6 +118,8 @@ proc show_diff {path w {lno {}} {scroll_pos {}} {callback {}}} {
 
 	set cont_info [list $scroll_pos $callback]
 
+	apply_tab_size 0
+
 	if {[string first {U} $m] >= 0} {
 		merge_load_stages $path [list show_unmerged_diff $cont_info]
 	} elseif {$m eq {_O}} {
@@ -112,6 +127,9 @@ proc show_diff {path w {lno {}} {scroll_pos {}} {callback {}}} {
 	} else {
 		start_show_diff $cont_info
 	}
+
+	global current_diff_path selected_paths
+	set selected_paths($current_diff_path) 1
 }
 
 proc show_unmerged_diff {cont_info} {
@@ -205,10 +223,9 @@ proc show_other_diff {path w m cont_info} {
 		}
 		$ui_diff conf -state normal
 		if {$type eq {submodule}} {
-			$ui_diff insert end [append \
-				"* " \
-				[mc "Git Repository (subproject)"] \
-				"\n"] d_info
+			$ui_diff insert end \
+				"* [mc "Git Repository (subproject)"]\n" \
+				d_info
 		} elseif {![catch {set type [exec file $path]}]} {
 			set n [string length $path]
 			if {[string equal -length $n $path $type]} {
@@ -253,19 +270,6 @@ proc show_other_diff {path w m cont_info} {
 	}
 }
 
-proc get_conflict_marker_size {path} {
-	set size 7
-	catch {
-		set fd_rc [eval [list git_read check-attr "conflict-marker-size" -- $path]]
-		set ret [gets $fd_rc line]
-		close $fd_rc
-		if {$ret > 0} {
-			regexp {.*: conflict-marker-size: (\d+)$} $line line size
-		}
-	}
-	return $size
-}
-
 proc start_show_diff {cont_info {add_opts {}}} {
 	global file_states file_lists
 	global is_3way_diff is_submodule_diff diff_active repo_config
@@ -281,12 +285,15 @@ proc start_show_diff {cont_info {add_opts {}}} {
 	set is_submodule_diff 0
 	set diff_active 1
 	set current_diff_header {}
-	set conflict_size [get_conflict_marker_size $path]
+	set conflict_size [gitattr $path conflict-marker-size 7]
 
 	set cmd [list]
 	if {$w eq $ui_index} {
 		lappend cmd diff-index
 		lappend cmd --cached
+		if {[git-version >= "1.7.2"]} {
+			lappend cmd --ignore-submodules=dirty
+		}
 	} elseif {$w eq $ui_workdir} {
 		if {[string first {U} $m] >= 0} {
 			lappend cmd diff
@@ -340,6 +347,10 @@ proc start_show_diff {cont_info {add_opts {}}} {
 	}
 
 	set ::current_diff_inheader 1
+	# Detect pre-image lines of the diff3 conflict-style. They are just
+	# '++' lines which is not bijective. Thus, we need to maintain a state
+	# across lines.
+	set ::conflict_in_pre_image 0
 	fconfigure $fd \
 		-blocking 0 \
 		-encoding [get_path_encoding $path] \
@@ -398,7 +409,10 @@ proc read_diff {fd conflict_size cont_info} {
 
 		# -- Automatically detect if this is a 3 way diff.
 		#
-		if {[string match {@@@ *} $line]} {set is_3way_diff 1}
+		if {[string match {@@@ *} $line]} {
+			set is_3way_diff 1
+			apply_tab_size 1
+		}
 
 		if {$::current_diff_inheader} {
 
@@ -439,11 +453,23 @@ proc read_diff {fd conflict_size cont_info} {
 			{--} {set tags d_--}
 			{++} {
 				set regexp [string map [list %conflict_size $conflict_size]\
-								{^\+\+([<>=]){%conflict_size}(?: |$)}]
+								{^\+\+([<>=|]){%conflict_size}(?: |$)}]
 				if {[regexp $regexp $line _g op]} {
 					set is_conflict_diff 1
 					set line [string replace $line 0 1 {  }]
 					set tags d$op
+
+					# The ||| conflict-marker marks the start of the pre-image.
+					# All those lines are also prefixed with '++'. Thus we need
+					# to maintain this state.
+					set ::conflict_in_pre_image [expr {$op eq {|}}]
+				} elseif {$::conflict_in_pre_image} {
+					# This is a pre-image line. It is the one which both sides
+					# are based on. As it has also the '++' line start, it is
+					# normally shown as 'added'. Invert this to '--' to make
+					# it a 'removed' line.
+					set line [string replace $line 0 1 {--}]
+					set tags d_--
 				} else {
 					set tags d_++
 				}
@@ -544,24 +570,31 @@ proc read_diff {fd conflict_size cont_info} {
 	}
 }
 
-proc apply_hunk {x y} {
+proc apply_or_revert_hunk {x y revert} {
 	global current_diff_path current_diff_header current_diff_side
-	global ui_diff ui_index file_states
+	global ui_diff ui_index file_states last_revert last_revert_enc
 
 	if {$current_diff_path eq {} || $current_diff_header eq {}} return
 	if {![lock_index apply_hunk]} return
 
-	set apply_cmd {apply --cached --whitespace=nowarn}
+	set apply_cmd {apply --whitespace=nowarn}
 	set mi [lindex $file_states($current_diff_path) 0]
 	if {$current_diff_side eq $ui_index} {
 		set failed_msg [mc "Failed to unstage selected hunk."]
-		lappend apply_cmd --reverse
+		lappend apply_cmd --reverse --cached
 		if {[string index $mi 0] ne {M}} {
 			unlock_index
 			return
 		}
 	} else {
-		set failed_msg [mc "Failed to stage selected hunk."]
+		if {$revert} {
+			set failed_msg [mc "Failed to revert selected hunk."]
+			lappend apply_cmd --reverse
+		} else {
+			set failed_msg [mc "Failed to stage selected hunk."]
+			lappend apply_cmd --cached
+		}
+
 		if {[string index $mi 1] ne {M}} {
 			unlock_index
 			return
@@ -580,29 +613,40 @@ proc apply_hunk {x y} {
 		set e_lno end
 	}
 
+	set wholepatch "$current_diff_header[$ui_diff get $s_lno $e_lno]"
+
 	if {[catch {
 		set enc [get_path_encoding $current_diff_path]
 		set p [eval git_write $apply_cmd]
 		fconfigure $p -translation binary -encoding $enc
-		puts -nonewline $p $current_diff_header
-		puts -nonewline $p [$ui_diff get $s_lno $e_lno]
+		puts -nonewline $p $wholepatch
 		close $p} err]} {
-		error_popup [append $failed_msg "\n\n$err"]
+		error_popup "$failed_msg\n\n$err"
 		unlock_index
 		return
+	}
+
+	if {$revert} {
+		# Save a copy of this patch for undoing reverts.
+		set last_revert $wholepatch
+		set last_revert_enc $enc
 	}
 
 	$ui_diff conf -state normal
 	$ui_diff delete $s_lno $e_lno
 	$ui_diff conf -state disabled
 
+	# Check if the hunk was the last one in the file.
 	if {[$ui_diff get 1.0 end] eq "\n"} {
 		set o _
 	} else {
 		set o ?
 	}
 
-	if {$current_diff_side eq $ui_index} {
+	# Update the status flags.
+	if {$revert} {
+		set mi [string index $mi 0]$o
+	} elseif {$current_diff_side eq $ui_index} {
 		set mi ${o}M
 	} elseif {[string index $mi 0] eq {_}} {
 		set mi M$o
@@ -617,9 +661,9 @@ proc apply_hunk {x y} {
 	}
 }
 
-proc apply_range_or_line {x y} {
+proc apply_or_revert_range_or_line {x y revert} {
 	global current_diff_path current_diff_header current_diff_side
-	global ui_diff ui_index file_states
+	global ui_diff ui_index file_states last_revert
 
 	set selected [$ui_diff tag nextrange sel 0.0]
 
@@ -637,19 +681,27 @@ proc apply_range_or_line {x y} {
 	if {$current_diff_path eq {} || $current_diff_header eq {}} return
 	if {![lock_index apply_hunk]} return
 
-	set apply_cmd {apply --cached --whitespace=nowarn}
+	set apply_cmd {apply --whitespace=nowarn}
 	set mi [lindex $file_states($current_diff_path) 0]
 	if {$current_diff_side eq $ui_index} {
 		set failed_msg [mc "Failed to unstage selected line."]
 		set to_context {+}
-		lappend apply_cmd --reverse
+		lappend apply_cmd --reverse --cached
 		if {[string index $mi 0] ne {M}} {
 			unlock_index
 			return
 		}
 	} else {
-		set failed_msg [mc "Failed to stage selected line."]
-		set to_context {-}
+		if {$revert} {
+			set failed_msg [mc "Failed to revert selected line."]
+			set to_context {+}
+			lappend apply_cmd --reverse
+		} else {
+			set failed_msg [mc "Failed to stage selected line."]
+			set to_context {-}
+			lappend apply_cmd --cached
+		}
+
 		if {[string index $mi 1] ne {M}} {
 			unlock_index
 			return
@@ -675,6 +727,7 @@ proc apply_range_or_line {x y} {
 		set hh [$ui_diff get $i_l "$i_l + 1 lines"]
 		set hh [lindex [split $hh ,] 0]
 		set hln [lindex [split $hh -] 1]
+		set hln [lindex [split $hln " "] 0]
 
 		# There is a special situation to take care of. Consider this
 		# hunk:
@@ -764,8 +817,15 @@ proc apply_range_or_line {x y} {
 				# context line
 				set ln [$ui_diff get $i_l $next_l]
 				set patch "$patch$pre_context$ln"
-				set n [expr $n+1]
-				set m [expr $m+1]
+				# Skip the "\ No newline at end of
+				# file". Depending on the locale setting
+				# we don't know what this line looks
+				# like exactly. The only thing we do
+				# know is that it starts with "\ "
+				if {![string match {\\ *} $ln]} {
+					set n [expr $n+1]
+					set m [expr $m+1]
+				}
 				set pre_context {}
 			} elseif {$c1 eq $to_context} {
 				# turn change line into context line
@@ -798,8 +858,48 @@ proc apply_range_or_line {x y} {
 		puts -nonewline $p $current_diff_header
 		puts -nonewline $p $wholepatch
 		close $p} err]} {
-		error_popup [append $failed_msg "\n\n$err"]
+		error_popup "$failed_msg\n\n$err"
+		unlock_index
+		return
 	}
+
+	if {$revert} {
+		# Save a copy of this patch for undoing reverts.
+		set last_revert $current_diff_header$wholepatch
+		set last_revert_enc $enc
+	}
+
+	unlock_index
+}
+
+# Undo the last line/hunk reverted. When hunks and lines are reverted, a copy
+# of the diff applied is saved. Re-apply that diff to undo the revert.
+#
+# Right now, we only use a single variable to hold the copy, and not a
+# stack/deque for simplicity, so multiple undos are not possible. Maybe this
+# can be added if the need for something like this is felt in the future.
+proc undo_last_revert {} {
+	global last_revert current_diff_path current_diff_header
+	global last_revert_enc
+
+	if {$last_revert eq {}} return
+	if {![lock_index apply_hunk]} return
+
+	set apply_cmd {apply --whitespace=nowarn}
+	set failed_msg [mc "Failed to undo last revert."]
+
+	if {[catch {
+		set enc $last_revert_enc
+		set p [eval git_write $apply_cmd]
+		fconfigure $p -translation binary -encoding $enc
+		puts -nonewline $p $last_revert
+		close $p} err]} {
+		error_popup "$failed_msg\n\n$err"
+		unlock_index
+		return
+	}
+
+	set last_revert {}
 
 	unlock_index
 }

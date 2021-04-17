@@ -24,7 +24,7 @@ test_expect_success 'prepare repository' '
 '
 
 test_expect_success 'Merge with d/f conflicts' '
-	test_expect_code 1 git merge "merge msg" B master
+	test_expect_code 1 git merge -m "merge msg" master
 '
 
 test_expect_success 'F/D conflict' '
@@ -83,15 +83,12 @@ test_expect_success 'modify/delete + directory/file conflict' '
 	test 4 -eq $(git ls-files -u | wc -l) &&
 	test 1 -eq $(git ls-files -o | wc -l) &&
 
-	test -f letters/file &&
-	test -f letters.txt &&
-	test -f letters~modify
+	test_path_is_file letters/file &&
+	test_path_is_file letters.txt &&
+	test_path_is_file letters~modify
 '
 
 test_expect_success 'modify/delete + directory/file conflict; other way' '
-	# Yes, we really need the double reset since "letters" appears as
-	# both a file and a directory.
-	git reset --hard &&
 	git reset --hard &&
 	git clean -f &&
 	git checkout modify^0 &&
@@ -102,9 +99,52 @@ test_expect_success 'modify/delete + directory/file conflict; other way' '
 	test 4 -eq $(git ls-files -u | wc -l) &&
 	test 1 -eq $(git ls-files -o | wc -l) &&
 
-	test -f letters/file &&
-	test -f letters.txt &&
-	test -f letters~HEAD
+	test_path_is_file letters/file &&
+	test_path_is_file letters.txt &&
+	test_path_is_file letters~HEAD
+'
+
+test_expect_success 'Simple merge in repo with interesting pathnames' '
+	# Simple lexicographic ordering of files and directories would be:
+	#     foo
+	#     foo/bar
+	#     foo/bar-2
+	#     foo/bar/baz
+	#     foo/bar-2/baz
+	# The fact that foo/bar-2 appears between foo/bar and foo/bar/baz
+	# can trip up some codepaths, and is the point of this test.
+	test_create_repo name-ordering &&
+	(
+		cd name-ordering &&
+
+		mkdir -p foo/bar &&
+		mkdir -p foo/bar-2 &&
+		>foo/bar/baz &&
+		>foo/bar-2/baz &&
+		git add . &&
+		git commit -m initial &&
+
+		git branch main &&
+		git branch other &&
+
+		git checkout other &&
+		echo other >foo/bar-2/baz &&
+		git add -u &&
+		git commit -m other &&
+
+		git checkout main &&
+		echo main >foo/bar/baz &&
+		git add -u &&
+		git commit -m main &&
+
+		git merge other &&
+		git ls-files -s >out &&
+		test_line_count = 2 out &&
+		git rev-parse :0:foo/bar/baz :0:foo/bar-2/baz >actual &&
+		git rev-parse HEAD~1:foo/bar/baz other:foo/bar-2/baz >expect &&
+		test_cmp expect actual
+	)
+
 '
 
 test_done

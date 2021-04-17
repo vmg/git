@@ -1,8 +1,10 @@
 #include "cache.h"
+#include "refs.h"
 #include "remote.h"
+#include "object-store.h"
 #include "strbuf.h"
 #include "url.h"
-#include "exec_cmd.h"
+#include "exec-cmd.h"
 #include "run-command.h"
 #include "vcs-svn/svndump.h"
 #include "notes.h"
@@ -50,23 +52,22 @@ static void terminate_batch(void)
 }
 
 /* NOTE: 'ref' refers to a git reference, while 'rev' refers to a svn revision. */
-static char *read_ref_note(const unsigned char sha1[20])
+static char *read_ref_note(const struct object_id *oid)
 {
-	const unsigned char *note_sha1;
+	const struct object_id *note_oid;
 	char *msg = NULL;
 	unsigned long msglen;
 	enum object_type type;
 
 	init_notes(NULL, notes_ref, NULL, 0);
-	if (!(note_sha1 = get_note(NULL, sha1)))
+	if (!(note_oid = get_note(NULL, oid)))
 		return NULL;	/* note tree not found */
-	if (!(msg = read_sha1_file(note_sha1, &type, &msglen)))
+	if (!(msg = read_object_file(note_oid, &type, &msglen)))
 		error("Empty notes tree. %s", notes_ref);
 	else if (!msglen || type != OBJ_BLOB) {
 		error("Note contains unusable content. "
 			"Is something else using this notes tree? %s", notes_ref);
-		free(msg);
-		msg = NULL;
+		FREE_AND_NULL(msg);
 	}
 	free_notes(NULL);
 	return msg;
@@ -78,11 +79,11 @@ static int parse_rev_note(const char *msg, struct rev_note *res)
 	size_t len;
 
 	while (*msg) {
-		end = strchr(msg, '\n');
-		len = end ? end - msg : strlen(msg);
+		end = strchrnul(msg, '\n');
+		len = end - msg;
 
 		key = "Revision-number: ";
-		if (!prefixcmp(msg, key)) {
+		if (starts_with(msg, key)) {
 			long i;
 			char *end;
 			value = msg + strlen(key);
@@ -98,8 +99,8 @@ static int parse_rev_note(const char *msg, struct rev_note *res)
 	return -1;
 }
 
-static int note2mark_cb(const unsigned char *object_sha1,
-		const unsigned char *note_sha1, char *note_path,
+static int note2mark_cb(const struct object_id *object_oid,
+		const struct object_id *note_oid, char *note_path,
 		void *cb_data)
 {
 	FILE *file = (FILE *)cb_data;
@@ -108,14 +109,14 @@ static int note2mark_cb(const unsigned char *object_sha1,
 	enum object_type type;
 	struct rev_note note;
 
-	if (!(msg = read_sha1_file(note_sha1, &type, &msglen)) ||
+	if (!(msg = read_object_file(note_oid, &type, &msglen)) ||
 			!msglen || type != OBJ_BLOB) {
 		free(msg);
 		return 1;
 	}
 	if (parse_rev_note(msg, &note))
 		return 2;
-	if (fprintf(file, ":%d %s\n", note.rev_nr, sha1_to_hex(object_sha1)) < 1)
+	if (fprintf(file, ":%d %s\n", note.rev_nr, oid_to_hex(object_oid)) < 1)
 		return 3;
 	return 0;
 }
@@ -123,10 +124,8 @@ static int note2mark_cb(const unsigned char *object_sha1,
 static void regenerate_marks(void)
 {
 	int ret;
-	FILE *marksfile = fopen(marksfilename, "w+");
+	FILE *marksfile = xfopen(marksfilename, "w+");
 
-	if (!marksfile)
-		die_errno("Couldn't create mark file %s.", marksfilename);
 	ret = for_each_note(NULL, 0, note2mark_cb, marksfile);
 	if (ret)
 		die("Regeneration of marks failed, returned %d.", ret);
@@ -147,14 +146,12 @@ static void check_or_regenerate_marks(int latestrev)
 	marksfile = fopen(marksfilename, "r");
 	if (!marksfile) {
 		regenerate_marks();
-		marksfile = fopen(marksfilename, "r");
-		if (!marksfile)
-			die_errno("cannot read marks file %s!", marksfilename);
+		marksfile = xfopen(marksfilename, "r");
 		fclose(marksfile);
 	} else {
 		strbuf_addf(&sb, ":%d ", latestrev);
-		while (strbuf_getline(&line, marksfile, '\n') != EOF) {
-			if (!prefixcmp(line.buf, sb.buf)) {
+		while (strbuf_getline_lf(&line, marksfile) != EOF) {
+			if (starts_with(line.buf, sb.buf)) {
 				found++;
 				break;
 			}
@@ -173,15 +170,15 @@ static int cmd_import(const char *line)
 	int code;
 	int dumpin_fd;
 	char *note_msg;
-	unsigned char head_sha1[20];
+	struct object_id head_oid;
 	unsigned int startrev;
-	struct argv_array svndump_argv = ARGV_ARRAY_INIT;
-	struct child_process svndump_proc;
+	struct child_process svndump_proc = CHILD_PROCESS_INIT;
+	const char *command = "svnrdump";
 
-	if (read_ref(private_ref, head_sha1))
+	if (read_ref(private_ref, &head_oid))
 		startrev = 0;
 	else {
-		note_msg = read_ref_note(head_sha1);
+		note_msg = read_ref_note(&head_oid);
 		if(note_msg == NULL) {
 			warning("No note found for %s.", private_ref);
 			startrev = 0;
@@ -200,17 +197,15 @@ static int cmd_import(const char *line)
 		if(dumpin_fd < 0)
 			die_errno("Couldn't open svn dump file %s.", url);
 	} else {
-		memset(&svndump_proc, 0, sizeof(struct child_process));
 		svndump_proc.out = -1;
-		argv_array_push(&svndump_argv, "svnrdump");
-		argv_array_push(&svndump_argv, "dump");
-		argv_array_push(&svndump_argv, url);
-		argv_array_pushf(&svndump_argv, "-r%u:HEAD", startrev);
-		svndump_proc.argv = svndump_argv.argv;
+		argv_array_push(&svndump_proc.args, command);
+		argv_array_push(&svndump_proc.args, "dump");
+		argv_array_push(&svndump_proc.args, url);
+		argv_array_pushf(&svndump_proc.args, "-r%u:HEAD", startrev);
 
 		code = start_command(&svndump_proc);
 		if (code)
-			die("Unable to start %s, code %d", svndump_proc.argv[0], code);
+			die("Unable to start %s, code %d", command, code);
 		dumpin_fd = svndump_proc.out;
 	}
 	/* setup marks file import/export */
@@ -226,8 +221,7 @@ static int cmd_import(const char *line)
 	if (!dump_from_file) {
 		code = finish_command(&svndump_proc);
 		if (code)
-			warning("%s, returned %d", svndump_proc.argv[0], code);
-		argv_array_clear(&svndump_argv);
+			warning("%s, returned %d", command, code);
 	}
 
 	return 0;
@@ -264,7 +258,7 @@ static int do_command(struct strbuf *line)
 		return 1;	/* end of command stream, quit */
 	}
 	if (batch_cmd) {
-		if (prefixcmp(batch_cmd->name, line->buf))
+		if (!starts_with(batch_cmd->name, line->buf))
 			die("Active %s batch interrupted by %s", batch_cmd->name, line->buf);
 		/* buffer batch lines */
 		string_list_append(&batchlines, line->buf);
@@ -272,7 +266,7 @@ static int do_command(struct strbuf *line)
 	}
 
 	for (p = input_command_list; p->name; p++) {
-		if (!prefixcmp(line->buf, p->name) && (strlen(p->name) == line->len ||
+		if (starts_with(line->buf, p->name) && (strlen(p->name) == line->len ||
 				line->buf[strlen(p->name)] == ' ')) {
 			if (p->batchable) {
 				batch_cmd = p;
@@ -286,7 +280,7 @@ static int do_command(struct strbuf *line)
 	return 0;
 }
 
-int main(int argc, const char **argv)
+int cmd_main(int argc, const char **argv)
 {
 	struct strbuf buf = STRBUF_INIT, url_sb = STRBUF_INIT,
 			private_ref_sb = STRBUF_INIT, marksfilename_sb = STRBUF_INIT,
@@ -294,7 +288,6 @@ int main(int argc, const char **argv)
 	static struct remote *remote;
 	const char *url_in;
 
-	git_extract_argv0_path(argv[0]);
 	setup_git_directory();
 	if (argc < 2 || argc > 3) {
 		usage("git-remote-svn <remote-name> [<url>]");
@@ -304,7 +297,7 @@ int main(int argc, const char **argv)
 	remote = remote_get(argv[1]);
 	url_in = (argc == 3) ? argv[2] : remote->url[0];
 
-	if (!prefixcmp(url_in, "file://")) {
+	if (starts_with(url_in, "file://")) {
 		dump_from_file = 1;
 		url = url_decode(url_in + sizeof("file://")-1);
 	} else {
@@ -324,7 +317,7 @@ int main(int argc, const char **argv)
 	marksfilename = marksfilename_sb.buf;
 
 	while (1) {
-		if (strbuf_getline(&buf, stdin, '\n') == EOF) {
+		if (strbuf_getline_lf(&buf, stdin) == EOF) {
 			if (ferror(stdin))
 				die("Error reading command stream");
 			else
